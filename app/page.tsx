@@ -805,6 +805,7 @@ export default function Page() {
   const [library, setLibrary] = useState<PlayerIdentity[]>([]);
   const [lineups, setLineups] = useState<Lineup[]>([]);
   const [showArchives, setShowArchives] = useState(false);
+  const [migrating, setMigrating] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-left-handed", String(leftHanded));
@@ -980,7 +981,7 @@ export default function Page() {
     setResultsMode(true);
   };
 
-  const saveGame = () => {
+  const saveGame = async () => {
     const data: Game = {
       id: `g-${Date.now()}`,
       createdAt: new Date().toISOString(),
@@ -988,78 +989,215 @@ export default function Page() {
       players,
       version: 1,
     };
+
+    // Cloud-first: attempt authoritative save to /api/sync.
+    // If the cloud save fails, fall back to local-only persistence so the app remains usable offline.
     try {
-      // Update history
-      const hxRaw = localStorage.getItem(LIB_KEYS.history);
-      const existing = hxRaw ? (JSON.parse(hxRaw) as Game[]) : [];
-      existing.unshift(data);
-      localStorage.setItem(LIB_KEYS.history, JSON.stringify(existing));
+      const res = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ game: data }),
+      });
 
-      // Update library stats (gamesPlayed, lastPlayedAt, wins)
-      const idsUsed = players.map((p) => p.playerId).filter(Boolean) as string[];
-      if (idsUsed.length > 0) {
-        const now = new Date().toISOString();
-        // Determine winner if all assigned have scores
-        let winnerId: string | undefined;
-        if (players.every((p) => typeof p.finalScore === "number" && p.playerId)) {
-          const sorted = players.slice().sort((a, b) => {
-            const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-            if (d !== 0) return d;
-            const d2 = b.decorCount - a.decorCount;
-            if (d2 !== 0) return d2;
-            return a.name.localeCompare(b.name);
-          });
-          winnerId = sorted[0].playerId;
-        }
-
-        setLibrary((lib) => {
-          const setIds = new Set(idsUsed);
-          const updated = lib.map((pl) =>
-            setIds.has(pl.id)
-              ? {
-                  ...pl,
-                  lastPlayedAt: now,
-                  gamesPlayed: (pl.gamesPlayed ?? 0) + 1,
-                  wins: pl.id === winnerId ? (pl.wins ?? 0) + 1 : pl.wins ?? 0,
-                }
-              : pl
-          );
-          saveLibrary(updated);
-          return updated;
-        });
-
-        // Update lineup with exact order if all assigned
-        if (idsUsed.length === players.length) {
-          setLineups((ls) => {
-            const size = players.length;
-            const signature = idsUsed.join("|");
-            let found = ls.find((l) => l.size === size && l.playerIds.join("|") === signature);
-            const nowIso = new Date().toISOString();
-            if (found) {
-              found.uses += 1;
-              found.lastUsedAt = nowIso;
-              const next = ls.slice();
-              saveLineups(next);
-              return next;
-            } else {
-              const newEntry: Lineup = {
-                id: ulidLike(),
-                size,
-                playerIds: idsUsed,
-                lastUsedAt: nowIso,
-                uses: 1,
-              };
-              const next = [newEntry, ...ls];
-              saveLineups(next);
-              return next;
-            }
-          });
-        }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Cloud save failed: ${res.status} ${text}`);
+      }
+      const payload = await res.json().catch(() => ({}));
+      if (!payload?.ok) {
+        // Treat as failure but continue to mirror locally for UI consistency
+        console.warn("Cloud returned non-ok:", payload);
       }
 
-      setAnnounceMsg("Saved to History");
-    } catch {
-      setAnnounceMsg("Save failed. Check connection and try again.");
+      // Mirror authoritative save locally so Archives still reads quickly and offline.
+      try {
+        const hxRaw = localStorage.getItem(LIB_KEYS.history);
+        const existing = hxRaw ? (JSON.parse(hxRaw) as Game[]) : [];
+        existing.unshift(data);
+        localStorage.setItem(LIB_KEYS.history, JSON.stringify(existing));
+      } catch {
+        // Ignore local mirror errors
+      }
+
+      // Update local library/lineups so UI reflects server state immediately
+      try {
+        const idsUsed = players.map((p) => p.playerId).filter(Boolean) as string[];
+        if (idsUsed.length > 0) {
+          const now = new Date().toISOString();
+          let winnerId: string | undefined;
+          if (players.every((p) => typeof p.finalScore === "number" && p.playerId)) {
+            const sorted = players.slice().sort((a, b) => {
+              const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+              if (d !== 0) return d;
+              const d2 = b.decorCount - a.decorCount;
+              if (d2 !== 0) return d2;
+              return a.name.localeCompare(b.name);
+            });
+            winnerId = sorted[0].playerId;
+          }
+
+          setLibrary((lib) => {
+            const setIds = new Set(idsUsed);
+            const updated = lib.map((pl) =>
+              setIds.has(pl.id)
+                ? {
+                    ...pl,
+                    lastPlayedAt: now,
+                    gamesPlayed: (pl.gamesPlayed ?? 0) + 1,
+                    wins: pl.id === winnerId ? (pl.wins ?? 0) + 1 : pl.wins ?? 0,
+                  }
+                : pl
+            );
+            try { saveLibrary(updated); } catch {}
+            return updated;
+          });
+
+          if (idsUsed.length === players.length) {
+            setLineups((ls) => {
+              const size = players.length;
+              const signature = idsUsed.join("|");
+              let found = ls.find((l) => l.size === size && l.playerIds.join("|") === signature);
+              const nowIso = new Date().toISOString();
+              if (found) {
+                found.uses += 1;
+                found.lastUsedAt = nowIso;
+                const next = ls.slice();
+                try { saveLineups(next); } catch {}
+                return next;
+              } else {
+                const newEntry: Lineup = {
+                  id: ulidLike(),
+                  size,
+                  playerIds: idsUsed,
+                  lastUsedAt: nowIso,
+                  uses: 1,
+                };
+                const next = [newEntry, ...ls];
+                try { saveLineups(next); } catch {}
+                return next;
+              }
+            });
+          }
+        }
+      } catch {
+        // ignore local update errors
+      }
+
+      setAnnounceMsg("Saved to Cloud");
+    } catch (cloudErr) {
+      console.warn("Cloud save failed, falling back to local save", cloudErr);
+
+      // Fallback local persistence (preserve previous behavior)
+      try {
+        const hxRaw = localStorage.getItem(LIB_KEYS.history);
+        const existing = hxRaw ? (JSON.parse(hxRaw) as Game[]) : [];
+        existing.unshift(data);
+        localStorage.setItem(LIB_KEYS.history, JSON.stringify(existing));
+
+        const idsUsed = players.map((p) => p.playerId).filter(Boolean) as string[];
+        if (idsUsed.length > 0) {
+          const now = new Date().toISOString();
+          let winnerId: string | undefined;
+          if (players.every((p) => typeof p.finalScore === "number" && p.playerId)) {
+            const sorted = players.slice().sort((a, b) => {
+              const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+              if (d !== 0) return d;
+              const d2 = b.decorCount - a.decorCount;
+              if (d2 !== 0) return d2;
+              return a.name.localeCompare(b.name);
+            });
+            winnerId = sorted[0].playerId;
+          }
+
+          setLibrary((lib) => {
+            const setIds = new Set(idsUsed);
+            const updated = lib.map((pl) =>
+              setIds.has(pl.id)
+                ? {
+                    ...pl,
+                    lastPlayedAt: now,
+                    gamesPlayed: (pl.gamesPlayed ?? 0) + 1,
+                    wins: pl.id === winnerId ? (pl.wins ?? 0) + 1 : pl.wins ?? 0,
+                  }
+                : pl
+            );
+            try { saveLibrary(updated); } catch {}
+            return updated;
+          });
+
+          if (idsUsed.length === players.length) {
+            setLineups((ls) => {
+              const size = players.length;
+              const signature = idsUsed.join("|");
+              let found = ls.find((l) => l.size === size && l.playerIds.join("|") === signature);
+              const nowIso = new Date().toISOString();
+              if (found) {
+                found.uses += 1;
+                found.lastUsedAt = nowIso;
+                const next = ls.slice();
+                try { saveLineups(next); } catch {}
+                return next;
+              } else {
+                const newEntry: Lineup = {
+                  id: ulidLike(),
+                  size,
+                  playerIds: idsUsed,
+                  lastUsedAt: nowIso,
+                  uses: 1,
+                };
+                const next = [newEntry, ...ls];
+                try { saveLineups(next); } catch {}
+                return next;
+              }
+            });
+          }
+        }
+
+        setAnnounceMsg("Saved locally (cloud unavailable)");
+      } catch {
+        setAnnounceMsg("Save failed. Check connection and try again.");
+      }
+    }
+  };
+
+  const migrateToSupabase = async () => {
+    if (migrating) return;
+    const proceed = window.confirm(
+      "Migrate local players, games, and lineups to Supabase now?"
+    );
+    if (!proceed) return;
+    try {
+      setMigrating(true);
+      const playersLib = loadLibrary();
+      let history: Game[] = [];
+      try {
+        const raw = localStorage.getItem(LIB_KEYS.history);
+        history = raw ? (JSON.parse(raw) as Game[]) : [];
+      } catch {
+        history = [];
+      }
+      const lineupsLib = loadLineups();
+
+      const res = await fetch("/api/migrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          players: playersLib,
+          history,
+          lineups: lineupsLib,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const pc = data?.counts?.players ?? playersLib.length;
+      const gc = data?.counts?.games ?? history.length;
+      const lc = data?.counts?.lineups ?? lineupsLib.length;
+      setAnnounceMsg(`Migration complete ✓ players:${pc} games:${gc} lineups:${lc}`);
+    } catch (e) {
+      console.error(e);
+      setAnnounceMsg("Migration failed. Check server config.");
+    } finally {
+      setMigrating(false);
     }
   };
 
@@ -1122,6 +1260,15 @@ export default function Page() {
             onClick={() => setShowArchives(true)}
           >
             Archives
+          </button>
+          <button
+            className="btn btn-outline"
+            aria-label="Migrate local data to Supabase"
+            style={{ height: 32 }}
+            onClick={migrateToSupabase}
+            disabled={migrating}
+          >
+            Migrate
           </button>
         </div>
       </header>
@@ -1269,6 +1416,295 @@ export default function Page() {
         />
       ) : null}
     </main>
+  );
+}
+
+/* =========================
+   Archives Modal (History + Leaderboard)
+   ========================= */
+
+function ArchivesModal({
+  close,
+  library,
+}: {
+  close: () => void;
+  library: PlayerIdentity[];
+}) {
+  const [tab, setTab] = useState<"history" | "leaderboard">("history");
+  const [history, setHistory] = useState<Game[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LIB_KEYS.history);
+      setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
+    } catch {
+      setHistory([]);
+    }
+  }, []);
+
+  // Leaderboard derived from library (wins desc default, then gamesPlayed desc, then name asc)
+  const leaderboard = useMemo(() => {
+    const rows = [...library].map((p) => ({
+      id: p.id,
+      name: p.displayName,
+      wins: p.wins ?? 0,
+      games: p.gamesPlayed ?? 0,
+      avg: 0,
+      high: 0,
+    }));
+
+    // Derive avg/high from saved games if available
+    try {
+      const raw = localStorage.getItem(LIB_KEYS.history);
+      const hx = raw ? (JSON.parse(raw) as Game[]) : [];
+      const sums = new Map<string, { total: number; count: number; high: number }>();
+      for (const g of hx) {
+        for (const pl of g.players) {
+          if (!pl.playerId || typeof pl.finalScore !== "number") continue;
+          const rec = sums.get(pl.playerId) ?? { total: 0, count: 0, high: 0 };
+          rec.total += pl.finalScore ?? 0;
+          rec.count += 1;
+          rec.high = Math.max(rec.high, pl.finalScore ?? 0);
+          sums.set(pl.playerId, rec);
+        }
+      }
+      rows.forEach((r) => {
+        const rec = sums.get(r.id);
+        if (rec && rec.count > 0) {
+          r.avg = Math.round((rec.total / rec.count) * 10) / 10;
+          r.high = rec.high;
+        }
+      });
+    } catch { /* ignore */ }
+
+    rows.sort((a, b) => {
+      const d = b.wins - a.wins;
+      if (d !== 0) return d;
+      const d2 = b.games - a.games;
+      if (d2 !== 0) return d2;
+      return a.name.localeCompare(b.name);
+    });
+    return rows;
+  }, [library]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="card"
+      style={{
+        position: "fixed",
+        inset: 16,
+        zIndex: 60,
+        background: "var(--cream)",
+        overflow: "auto",
+      }}
+    >
+      {/* Header with responsive alignment */}
+      <div
+        className="card-header"
+        style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}
+      >
+        <div
+          className="row"
+          style={{
+            gap: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
+          <h2 className="h2" style={{ margin: 0, lineHeight: 1.2, whiteSpace: "nowrap" }}>
+            Game Archives
+          </h2>
+          <div
+            className="row"
+            role="tablist"
+            aria-label="Archives tabs"
+            style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}
+          >
+            <button
+              role="tab"
+              aria-selected={tab === "history"}
+              className="btn btn-outline"
+              style={{ height: 32, paddingInline: 10 }}
+              onClick={() => setTab("history")}
+            >
+              Game History
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "leaderboard"}
+              className="btn btn-outline"
+              style={{ height: 32, paddingInline: 10 }}
+              onClick={() => setTab("leaderboard")}
+            >
+              Player Leaderboard
+            </button>
+          </div>
+        </div>
+        <button
+          className="btn btn-outline"
+          style={{ height: 32, alignSelf: "center" }}
+          onClick={close}
+          aria-label="Close archives"
+        >
+          Close
+        </button>
+      </div>
+
+      {tab === "history" ? (
+        <div className="stack" style={{ gap: 8 }}>
+          {history.length === 0 ? (
+            <div className="caption" style={{ padding: 8 }}>
+              No saved games yet. Play a game and save results.
+            </div>
+          ) : (
+            history.map((g) => {
+              const date = new Date(g.createdAt).toLocaleString();
+
+              // Winner for summary (by finalScore desc, then decorCount desc, then name asc)
+              const sorted = g.players
+                .map((p) => ({ ...p }))
+                .sort((a, b) => {
+                  const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+                  if (d !== 0) return d;
+                  const d2 = b.decorCount - a.decorCount;
+                  if (d2 !== 0) return d2;
+                  return a.name.localeCompare(b.name);
+                });
+              const winner = sorted[0];
+
+              return (
+                <details key={g.id} className="card accordion-item" style={{ padding: 12 }}>
+                  <summary className="accordion-header" style={{ cursor: "pointer" }}>
+                    <div
+                      className="row"
+                      style={{ justifyContent: "space-between", width: "100%", alignItems: "center", gap: 8 }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 700 }}>{date}</div>
+                        <div
+                          className="caption"
+                          style={{
+                            maxWidth: "70ch",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Players: {g.players.map((p) => p.name).join(", ")}
+                        </div>
+                      </div>
+                      <div className="row" style={{ gap: 8, alignItems: "center", flexShrink: 0 }}>
+                        <span
+                          aria-hidden
+                          style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--celebration-gold)" }}
+                        />
+                        <div className="caption">Winner</div>
+                        <div style={{ fontWeight: 700 }}>{winner?.name ?? "—"}</div>
+                        <div style={{ fontWeight: 700 }}>{winner?.finalScore ?? 0}</div>
+                      </div>
+                    </div>
+                  </summary>
+
+                  <div className="accordion-panel">
+                    {/* Players and scores */}
+                    <div className="stack" style={{ gap: 6, marginTop: 6 }}>
+                      {sorted.map((pl, i) => (
+                        <section key={pl.name + i} className="card" style={{ padding: 10 }}>
+                          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                              <span className="caption">
+                                {i === 0 ? "1st" : i === 1 ? "2nd" : i === 2 ? "3rd" : `${i + 1}th`}
+                              </span>
+                              <strong>{pl.name}</strong>
+                            </div>
+                            <strong>{pl.finalScore ?? 0}</strong>
+                          </div>
+
+                          {/* Optional breakdown if present */}
+                          {pl.breakdown ? (
+                            <div className="stack" style={{ gap: 4, marginTop: 6 }}>
+                              {/* Per color */}
+                              <div className="row" style={{ justifyContent: "space-between" }}>
+                                <span className="caption">Painting Values</span>
+                              </div>
+                              {Object.entries(pl.breakdown.perColor as Record<string, any>).map(([k, v]) => (
+                                <div key={k} className="row" style={{ justifyContent: "space-between" }}>
+                                  <span>{k[0].toUpperCase() + k.slice(1)} {v.tiles} × ×{v.multiplier} =</span>
+                                  <span>{v.points}</span>
+                                </div>
+                              ))}
+                              {/* Eyeline */}
+                              <div className="row" style={{ justifyContent: "space-between" }}>
+                                <span>Eyeline {pl.breakdown.eyeline.tiles} × +3 =</span>
+                                <span>+{pl.breakdown.eyeline.points}</span>
+                              </div>
+                              {/* Decor */}
+                              <div className="row" style={{ justifyContent: "space-between" }}>
+                                <span>Decor</span>
+                                <span>+{pl.breakdown.decor}</span>
+                              </div>
+                              {/* Bonuses */}
+                              <div className="row" style={{ justifyContent: "space-between" }}>
+                                <span>Complete Board</span>
+                                <span>+{pl.breakdown.bonuses.completeBoard}</span>
+                              </div>
+                              {/* Penalties */}
+                              <div className="row" style={{ justifyContent: "space-between" }}>
+                                <span>Penalties</span>
+                                <span>
+                                  −
+                                  {(pl.breakdown.penalties.emptyCorners ?? 0) +
+                                    (pl.breakdown.penalties.unplacedPaintings ?? 0)}
+                                </span>
+                              </div>
+                            </div>
+                          ) : null}
+                        </section>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        <section className="card" style={{ padding: 12 }}>
+          {leaderboard.length === 0 ? (
+            <div className="caption" style={{ padding: 8 }}>No leaderboard yet. Save games to build stats.</div>
+          ) : (
+            <table className="table" role="table" aria-label="Player leaderboard">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Player</th>
+                  <th>Wins</th>
+                  <th>Games</th>
+                  <th>Avg. Score</th>
+                  <th>High</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaderboard.map((r, i) => (
+                  <tr key={r.id}>
+                    <td>#{i + 1}</td>
+                    <td>{r.name}</td>
+                    <td>{r.wins}</td>
+                    <td>{r.games}</td>
+                    <td>{r.avg}</td>
+                    <td>{r.high}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -1511,188 +1947,6 @@ function Results({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-/* =========================
-   Archives Modal (History + Leaderboard)
-   ========================= */
-
-function ArchivesModal({
-  close,
-  library,
-}: {
-  close: () => void;
-  library: PlayerIdentity[];
-}) {
-  const [tab, setTab] = useState<"history" | "leaderboard">("history");
-  const [history, setHistory] = useState<Game[]>([]);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LIB_KEYS.history);
-      setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
-    } catch {
-      setHistory([]);
-    }
-  }, []);
-
-  // Leaderboard derived from library (wins desc default, then gamesPlayed desc, then name asc)
-  const leaderboard = useMemo(() => {
-    const rows = [...library].map((p) => ({
-      id: p.id,
-      name: p.displayName,
-      wins: p.wins ?? 0,
-      games: p.gamesPlayed ?? 0,
-      avg: 0,
-      high: 0,
-    }));
-    // Derive avg/high from saved games if available
-    try {
-      const raw = localStorage.getItem(LIB_KEYS.history);
-      const hx = raw ? (JSON.parse(raw) as Game[]) : [];
-      const sums = new Map<string, { total: number; count: number; high: number }>();
-      for (const g of hx) {
-        for (const pl of g.players) {
-          if (!pl.playerId || typeof pl.finalScore !== "number") continue;
-          const rec = sums.get(pl.playerId) ?? { total: 0, count: 0, high: 0 };
-          rec.total += pl.finalScore ?? 0;
-          rec.count += 1;
-          rec.high = Math.max(rec.high, pl.finalScore ?? 0);
-          sums.set(pl.playerId, rec);
-        }
-      }
-      rows.forEach((r) => {
-        const rec = sums.get(r.id);
-        if (rec && rec.count > 0) {
-          r.avg = Math.round((rec.total / rec.count) * 10) / 10;
-          r.high = rec.high;
-        }
-      });
-    } catch {
-      // ignore
-    }
-    rows.sort((a, b) => {
-      const d = b.wins - a.wins;
-      if (d !== 0) return d;
-      const d2 = b.games - a.games;
-      if (d2 !== 0) return d2;
-      return a.name.localeCompare(b.name);
-    });
-    return rows;
-  }, [library]);
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="card"
-      style={{
-        position: "fixed",
-        inset: 16,
-        zIndex: 60,
-        background: "var(--cream)",
-        overflow: "auto",
-      }}
-    >
-      <div className="card-header">
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <h2 className="h2" style={{ margin: 0 }}>Game Archives</h2>
-          <div className="row" role="tablist" aria-label="Archives tabs" style={{ gap: 8 }}>
-            <button
-              role="tab"
-              aria-selected={tab === "history"}
-              className="btn btn-outline"
-              style={{ height: 32, paddingInline: 10 }}
-              onClick={() => setTab("history")}
-            >
-              Game History
-            </button>
-            <button
-              role="tab"
-              aria-selected={tab === "leaderboard"}
-              className="btn btn-outline"
-              style={{ height: 32, paddingInline: 10 }}
-              onClick={() => setTab("leaderboard")}
-            >
-              Player Leaderboard
-            </button>
-          </div>
-        </div>
-        <button className="btn btn-outline" style={{ height: 32 }} onClick={close} aria-label="Close archives">
-          Close
-        </button>
-      </div>
-
-      {tab === "history" ? (
-        <div className="stack" style={{ gap: 8 }}>
-          {history.length === 0 ? (
-            <div className="caption" style={{ padding: 8 }}>No saved games yet. Play a game and save results.</div>
-          ) : (
-            history.map((g) => {
-              const date = new Date(g.createdAt).toLocaleString();
-              // Determine winner (by finalScore desc, then decorCount desc, then name asc)
-              const withScores = g.players
-                .map((p) => ({ ...p }))
-                .sort((a, b) => {
-                  const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-                  if (d !== 0) return d;
-                  const d2 = b.decorCount - a.decorCount;
-                  if (d2 !== 0) return d2;
-                  return a.name.localeCompare(b.name);
-                });
-              const winner = withScores[0];
-              return (
-                <section key={g.id} className="card" style={{ padding: 12 }}>
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <div>
-                      <div style={{ fontWeight: 700 }}>{date}</div>
-                      <div className="caption">Players: {g.players.map((p) => p.name).join(", ")}</div>
-                    </div>
-                    <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                      <span aria-hidden style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--celebration-gold)" }} />
-                      <div className="caption">Winner</div>
-                      <div style={{ fontWeight: 700 }}>{winner?.name ?? "—"}</div>
-                      <div style={{ fontWeight: 700 }}>{winner?.finalScore ?? 0}</div>
-                    </div>
-                  </div>
-                </section>
-              );
-            })
-          )}
-        </div>
-      ) : (
-        <section className="card" style={{ padding: 12 }}>
-          {leaderboard.length === 0 ? (
-            <div className="caption" style={{ padding: 8 }}>No leaderboard yet. Save games to build stats.</div>
-          ) : (
-            <table className="table" role="table" aria-label="Player leaderboard">
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Player</th>
-                  <th>Wins</th>
-                  <th>Games</th>
-                  <th>Avg. Score</th>
-                  <th>Highscore</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaderboard.map((r, i) => (
-                  <tr key={r.id}>
-                    <td>#{i + 1}</td>
-                    <td>{r.name}</td>
-                    <td>{r.wins}</td>
-                    <td>{r.games}</td>
-                    <td>{r.avg}</td>
-                    <td>{r.high}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
-      )}
     </div>
   );
 }
