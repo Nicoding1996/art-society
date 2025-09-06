@@ -807,7 +807,6 @@ export default function Page() {
   const [library, setLibrary] = useState<PlayerIdentity[]>([]);
   const [lineups, setLineups] = useState<Lineup[]>([]);
   const [showArchives, setShowArchives] = useState(false);
-  const [migrating, setMigrating] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-left-handed", String(leftHanded));
@@ -1163,46 +1162,6 @@ export default function Page() {
     }
   };
 
-  const migrateToSupabase = async () => {
-    if (migrating) return;
-    const proceed = window.confirm(
-      "Migrate local players, games, and lineups to Supabase now?"
-    );
-    if (!proceed) return;
-    try {
-      setMigrating(true);
-      const playersLib = loadLibrary();
-      let history: Game[] = [];
-      try {
-        const raw = localStorage.getItem(LIB_KEYS.history);
-        history = raw ? (JSON.parse(raw) as Game[]) : [];
-      } catch {
-        history = [];
-      }
-      const lineupsLib = loadLineups();
-
-      const res = await fetch("/api/migrate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          players: playersLib,
-          history,
-          lineups: lineupsLib,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      const pc = data?.counts?.players ?? playersLib.length;
-      const gc = data?.counts?.games ?? history.length;
-      const lc = data?.counts?.lineups ?? lineupsLib.length;
-      setAnnounceMsg(`Migration complete ✓ players:${pc} games:${gc} lineups:${lc}`);
-    } catch (e) {
-      console.error(e);
-      setAnnounceMsg("Migration failed. Check server config.");
-    } finally {
-      setMigrating(false);
-    }
-  };
 
   const startNew = () => {
     setPrestige(DEFAULT_PRESTIGE);
@@ -1263,15 +1222,6 @@ export default function Page() {
             onClick={() => setShowArchives(true)}
           >
             Archives
-          </button>
-          <button
-            className="btn btn-outline"
-            aria-label="Migrate local data to Supabase"
-            style={{ height: 32 }}
-            onClick={migrateToSupabase}
-            disabled={migrating}
-          >
-            Migrate
           </button>
         </div>
       </header>
@@ -1435,60 +1385,46 @@ function ArchivesModal({
 }) {
   const [tab, setTab] = useState<"history" | "leaderboard">("history");
   const [history, setHistory] = useState<Game[]>([]);
-
+  const [leaderboard, setLeaderboard] = useState<
+    Array<{ id: string; name: string; wins: number; games: number; avg: number; high: number }>
+  >([]);
+ 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LIB_KEYS.history);
-      setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
-    } catch {
-      setHistory([]);
-    }
-  }, []);
-
-  // Leaderboard derived from library (wins desc default, then gamesPlayed desc, then name asc)
-  const leaderboard = useMemo(() => {
-    const rows = [...library].map((p) => ({
-      id: p.id,
-      name: p.displayName,
-      wins: p.wins ?? 0,
-      games: p.gamesPlayed ?? 0,
-      avg: 0,
-      high: 0,
-    }));
-
-    // Derive avg/high from saved games if available
-    try {
-      const raw = localStorage.getItem(LIB_KEYS.history);
-      const hx = raw ? (JSON.parse(raw) as Game[]) : [];
-      const sums = new Map<string, { total: number; count: number; high: number }>();
-      for (const g of hx) {
-        for (const pl of g.players) {
-          if (!pl.playerId || typeof pl.finalScore !== "number") continue;
-          const rec = sums.get(pl.playerId) ?? { total: 0, count: 0, high: 0 };
-          rec.total += pl.finalScore ?? 0;
-          rec.count += 1;
-          rec.high = Math.max(rec.high, pl.finalScore ?? 0);
-          sums.set(pl.playerId, rec);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/history", { cache: "no-store" });
+        if (!res.ok) throw new Error("fetch failed");
+        const data = await res.json();
+        if (!cancelled) {
+          setHistory((data.history ?? []) as Game[]);
+          setLeaderboard((data.leaderboard ?? []) as any);
         }
+      } catch {
+        // Fallback to localStorage + local library snapshot
+        try {
+          const raw = localStorage.getItem(LIB_KEYS.history);
+          setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
+        } catch {
+          setHistory([]);
+        }
+        const rows = [...library].map((p) => ({
+          id: p.id,
+          name: p.displayName,
+          wins: p.wins ?? 0,
+          games: p.gamesPlayed ?? 0,
+          avg: 0,
+          high: 0,
+        }));
+        setLeaderboard(rows);
       }
-      rows.forEach((r) => {
-        const rec = sums.get(r.id);
-        if (rec && rec.count > 0) {
-          r.avg = Math.round((rec.total / rec.count) * 10) / 10;
-          r.high = rec.high;
-        }
-      });
-    } catch { /* ignore */ }
-
-    rows.sort((a, b) => {
-      const d = b.wins - a.wins;
-      if (d !== 0) return d;
-      const d2 = b.games - a.games;
-      if (d2 !== 0) return d2;
-      return a.name.localeCompare(b.name);
-    });
-    return rows;
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [library]);
+
+  // Leaderboard is provided by the server (/api/history) and stored in `leaderboard` state.
 
   return (
     <div
