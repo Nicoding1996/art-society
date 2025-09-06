@@ -1,20 +1,22 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 
 /* =========================================================================
-   Art Society Scorer — MVP Implementation (with requested fixes)
+   Art Society Scorer — MVP + Player Identity System (local-first)
    - Prestige Track (reorder via buttons; locks after any input)
+   - Painting rows follow Prestige order top→bottom: ×2, ×3, ×4, ×5
    - 2–4 Player Cards with steppers (0–20), bonuses, penalties
    - Eyeline bonus +3 per tile for the current ×5 color only (clamped to total)
    - Calculate Scores → Results podium with breakdown
-   - Save to History (localStorage MVP) + visible toast
+   - Save to History (localStorage) + visible toast
+   - Player Identity Library (localStorage): assign players via header popover
+     • Entire Player Card header is the trigger (large tap target)
+     • Typeahead search to assign existing player or create a new one
+     • Recent players chips; duplicate-in-game protection with swap prompt
+     • One-time toast when the first new player is created
+     • “Use last lineup?” subtle link under Players control
    - Left-handed + Color-blind palette toggles applied to :root dataset
-   - FIXES:
-     * Removed “Full Gallery +5” entirely (kept “Complete Board +5” only)
-     * Name input: can clear; fallback “Player N” applied on blur only
-     * Stable ids: no random ids at render (use index-based p1..p4)
-     * Visible toast for save feedback
    ========================================================================= */
 
 type Color = "red" | "blue" | "yellow" | "green";
@@ -34,8 +36,9 @@ type Breakdown = {
 };
 
 type Player = {
-  id: string;
-  name: string; // may be ""
+  id: string; // stable card id p1..p4 (NOT identity)
+  playerId?: string; // identity id from library
+  name: string; // display name shown on card (from identity or default placeholder)
   paintings: Record<Color, number>;
   eyelineCountForX5: number;
   decorCount: number;
@@ -52,9 +55,106 @@ type Game = {
   id: string;
   createdAt: string;
   prestigeOrder: PrestigeOrderItem[];
-  players: Player[];
+  players: Player[]; // persisted as snapshot (includes names at save-time)
   version: number;
 };
+
+/* =========================
+   Player Identity Library
+   ========================= */
+
+type PlayerIdentity = {
+  id: string; // identity id
+  canonical: string;
+  displayName: string;
+  avatarKey?: string;
+  colorHint?: string;
+  createdAt: string; // ISO
+  lastPlayedAt?: string; // ISO
+  gamesPlayed?: number;
+  wins?: number;
+};
+
+type Lineup = {
+  id: string;
+  size: number;
+  playerIds: string[]; // order matters
+  lastUsedAt: string; // ISO
+  uses: number;
+};
+
+const LIB_KEYS = {
+  players: "art-society:players",
+  lineups: "art-society:lineups",
+  firstCreatedFlag: "art-society:first-player-created",
+  history: "art-society:history",
+} as const;
+
+function canonicalizeName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  // Normalize: collapse internal spaces, strip diacritics, lowercase
+  const collapsed = trimmed.replace(/\s+/g, " ");
+  const nfkd = collapsed.normalize("NFKD");
+  const stripped = nfkd.replace(/[\u0300-\u036f]/g, ""); // diacritics
+  const cleaned = stripped.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""); // strip edge punct
+  return cleaned.toLowerCase();
+}
+
+function levenshtein1(a: string, b: string): boolean {
+  // Quick check: true if edit distance <= 1 (insert/delete/replace)
+  if (a === b) return true;
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  // Ensure a is the shorter
+  if (la > lb) return levenshtein1(b, a);
+  // Now la <= lb
+  let i = 0, j = 0, edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) {
+      i++; j++; continue;
+    }
+    edits++;
+    if (edits > 1) return false;
+    if (la === lb) { i++; j++; }        // substitution
+    else { j++; }                       // insertion into a (or deletion from b)
+  }
+  // Tail
+  if (j < lb || i < la) edits++;
+  return edits <= 1;
+}
+
+function loadLibrary(): PlayerIdentity[] {
+  try {
+    const raw = localStorage.getItem(LIB_KEYS.players);
+    return raw ? (JSON.parse(raw) as PlayerIdentity[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveLibrary(list: PlayerIdentity[]) {
+  localStorage.setItem(LIB_KEYS.players, JSON.stringify(list));
+}
+
+function loadLineups(): Lineup[] {
+  try {
+    const raw = localStorage.getItem(LIB_KEYS.lineups);
+    return raw ? (JSON.parse(raw) as Lineup[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveLineups(list: Lineup[]) {
+  localStorage.setItem(LIB_KEYS.lineups, JSON.stringify(list));
+}
+
+function ulidLike(): string {
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10).toUpperCase();
+}
+
+/* =========================
+   Scoring helpers
+   ========================= */
 
 const COLORS: Color[] = ["red", "blue", "yellow", "green"];
 const DEFAULT_PRESTIGE: PrestigeOrderItem[] = [
@@ -107,7 +207,7 @@ function computeScore(
   const eyelinePoints = eyelineTiles * 3;
 
   const decorPoints = player.decorCount * 1;
-  const bonuses = (player.completeBoard ? 5 : 0);
+  const bonuses = player.completeBoard ? 5 : 0;
   const penalties =
     player.penalties.emptyCorners * 2 + player.penalties.unplacedPaintings * 2;
 
@@ -128,7 +228,10 @@ function computeScore(
   return { finalScore, breakdown };
 }
 
-// UI Controls
+/* =========================
+   UI Controls
+   ========================= */
+
 function Stepper({
   label,
   value,
@@ -219,7 +322,160 @@ function Check({
   );
 }
 
-// Player Card
+/* =========================
+   Identity Popover (inline)
+   ========================= */
+
+function IdentityPopover({
+  close,
+  assignExisting,
+  createNew,
+  library,
+  excludeIds,
+  initialValue,
+  setToast,
+}: {
+  close: () => void;
+  assignExisting: (pid: string) => void;
+  createNew: (name: string) => void;
+  library: PlayerIdentity[];
+  excludeIds: string[]; // already selected in this game
+  initialValue: string;
+  setToast: (msg: string) => void;
+}) {
+  const [q, setQ] = useState(initialValue);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const canonical = canonicalizeName(q);
+
+  const recents = useMemo(() => {
+    const sorted = [...library]
+      .filter((p) => !excludeIds.includes(p.id))
+      .sort((a, b) => {
+        const da = a.lastPlayedAt ? Date.parse(a.lastPlayedAt) : 0;
+        const db = b.lastPlayedAt ? Date.parse(b.lastPlayedAt) : 0;
+        return db - da;
+      })
+      .slice(0, 6);
+    return sorted;
+  }, [library, excludeIds]);
+
+  const suggestions = useMemo(() => {
+    const list = library.filter((p) => !excludeIds.includes(p.id));
+    const starts = list.filter((p) => p.canonical.startsWith(canonical) && canonical.length > 0);
+    const contains = list.filter(
+      (p) => canonical.length > 0 && !starts.includes(p) && p.canonical.includes(canonical)
+    );
+    const typo = list.filter(
+      (p) => canonical.length > 0 && !starts.includes(p) && !contains.includes(p) && levenshtein1(p.canonical, canonical)
+    );
+    return [...starts, ...contains, ...typo].slice(0, 8);
+  }, [library, excludeIds, canonical]);
+
+  const existingExact = useMemo(
+    () => library.find((p) => p.canonical === canonical),
+    [library, canonical]
+  );
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="card"
+      style={{
+        position: "absolute",
+        top: 56,
+        left: 8,
+        right: 8,
+        zIndex: 20,
+        background: "var(--cream)",
+      }}
+    >
+      <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
+        <input
+          ref={inputRef}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search or add player"
+          aria-label="Search or add player"
+          style={{
+            flex: 1,
+            border: "none",
+            background: "transparent",
+            outline: "none",
+            fontWeight: 700,
+            fontSize: 16,
+            padding: "6px 0",
+          }}
+        />
+        <button className="btn btn-outline" style={{ height: 32 }} onClick={() => setQ("")} aria-label="Clear player">
+          ×
+        </button>
+        <button className="btn btn-outline" style={{ height: 32 }} onClick={close} aria-label="Close">
+          Close
+        </button>
+      </div>
+
+      {/* Recents */}
+      {recents.length > 0 && (
+        <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+          {recents.map((p) => (
+            <button
+              key={p.id}
+              className="btn btn-outline"
+              style={{ height: 32, paddingInline: 10 }}
+              onClick={() => { assignExisting(p.id); close(); }}
+              aria-label={`Recent player ${p.displayName}`}
+            >
+              {p.displayName}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="divider" />
+
+      {/* Suggestions */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 240, overflowY: "auto" }}>
+        {suggestions.map((p) => (
+          <button
+            key={p.id}
+            className="btn btn-outline"
+            style={{ justifyContent: "space-between" }}
+            onClick={() => { assignExisting(p.id); close(); }}
+            aria-label={`Select player ${p.displayName}`}
+          >
+            <span>{p.displayName}</span>
+            <span className="caption">Played {p.gamesPlayed ?? 0}</span>
+          </button>
+        ))}
+        {/* Create new */}
+        {canonical && !existingExact && (
+          <button
+            className="btn btn-primary"
+            onClick={() => { createNew(q.trim()); close(); }}
+            aria-label={`Create player ${q.trim()}`}
+          >
+            Create player ‘{q.trim()}’
+          </button>
+        )}
+        {!canonical && suggestions.length === 0 && recents.length === 0 && (
+          <div className="caption" style={{ paddingBlock: 6 }}>Start typing a name…</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =========================
+   Player Card
+   ========================= */
+
 function PlayerCard({
   index,
   player,
@@ -229,6 +485,12 @@ function PlayerCard({
   locked,
   announce,
   order,
+  // Identity props
+  library,
+  selectedIdsExcludingSelf,
+  assignIdentity,
+  createIdentity,
+  setToast,
 }: {
   index: number;
   player: Player;
@@ -238,6 +500,11 @@ function PlayerCard({
   locked: boolean;
   announce: (msg: string) => void;
   order: PrestigeOrderItem[];
+  library: PlayerIdentity[];
+  selectedIdsExcludingSelf: string[];
+  assignIdentity: (idx: number, playerId: string, fallbackName?: string) => void;
+  createIdentity: (name: string, onAssigned: (id: string, displayName: string) => void) => void;
+  setToast: (msg: string) => void;
 }) {
   const setPaint = (color: Color, n: number) => {
     const next = { ...player, paintings: { ...player.paintings, [color]: n } };
@@ -268,9 +535,40 @@ function PlayerCard({
     [order]
   );
 
+  const [openId, setOpenId] = useState(false);
+  const headerRef = useRef<HTMLDivElement>(null);
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!openId) return;
+    function onDoc(e: MouseEvent) {
+      const el = headerRef.current?.parentElement as HTMLElement | undefined;
+      if (!el) return;
+      const card = el; // section .card
+      const target = e.target as Node;
+      if (!card.contains(target)) {
+        setOpenId(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [openId]);
+
   return (
-    <section className="card" aria-labelledby={`player-${player.id}-title`}>
-      <div className="card-header">
+    <section className="card" aria-labelledby={`player-${player.id}-title`} style={{ position: "relative" }}>
+      {/* Header: entire region is a trigger */}
+      <div
+        ref={headerRef}
+        className="card-header"
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpenId(true)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenId(true); } }}
+        aria-haspopup="dialog"
+        aria-expanded={openId}
+        aria-controls={`id-popover-${player.id}`}
+        style={{ cursor: "pointer" }}
+      >
         <div className="row" style={{ gap: 12 }}>
           <div
             aria-hidden
@@ -279,35 +577,29 @@ function PlayerCard({
               height: 28,
               borderRadius: "50%",
               border: "2px solid rgba(13,27,42,0.2)",
+              background: player.playerId ? "rgba(13,27,42,0.08)" : "transparent",
             }}
           />
-          <input
-            id={`player-${player.id}-title`}
-            value={player.name}
-            onChange={(e) =>
-              setPlayer({
-                ...player,
-                name: e.target.value, // allow blank while editing
-              })
-            }
-            onBlur={(e) => {
-              const trimmed = e.target.value.trim();
-              if (!trimmed) {
-                setPlayer({ ...player, name: `Player ${index + 1}` });
-              }
-            }}
-            aria-label="Player name"
-            style={{
-              border: "none",
-              background: "transparent",
-              fontWeight: 700,
-              fontSize: 16,
-              outline: "none",
-            }}
-            placeholder={`Player ${index + 1}`}
-          />
+          <div id={`player-${player.id}-title`} className="card-title" style={{ fontSize: 16 }}>
+            {player.name || `Player ${index + 1}`}
+          </div>
         </div>
       </div>
+
+      {/* Identity Popover */}
+      {openId && (
+        <div id={`id-popover-${player.id}`}>
+          <IdentityPopover
+            close={() => setOpenId(false)}
+            assignExisting={(pid) => assignIdentity(index, pid)}
+            createNew={(name) => createIdentity(name, (pid, display) => assignIdentity(index, pid, display))}
+            library={library}
+            excludeIds={selectedIdsExcludingSelf}
+            initialValue={player.name || ""}
+            setToast={setToast}
+          />
+        </div>
+      )}
 
       <div className="section-title">Painting Tiles</div>
 
@@ -420,6 +712,7 @@ function PlayerCard({
 
       <div className="divider" />
 
+      {/* Player Total with press-and-hold peek */}
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <strong>Player Total</strong>
         <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -442,10 +735,12 @@ function PlayerCard({
             onKeyUp={() => setPeek(false)}
           >
             {peek ? (
+              // open eye
               <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10z"/>
               </svg>
             ) : (
+              // slashed eye
               <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path fill="currentColor" d="M3.27 2 2 3.27 5.11 6.4A12.35 12.35 0 0 0 2 12s3 7 10 7a10.53 10.53 0 0 0 4.6-1.02l2.13 2.13L20 19.73 3.27 2zM12 17c-5.52 0-8.46-4.27-9.44-5 .35-.26 1.39-1.02 2.86-1.74l2.02 2.02A5 5 0 0 0 12 17zm0-10c5.52 0 8.46 4.27 9.44 5-.28.21-.99.72-1.98 1.28l-1.53-1.53A5 5 0 0 0 12 7z"/>
               </svg>
@@ -457,6 +752,10 @@ function PlayerCard({
   );
 }
 
+/* =========================
+   Helpers
+   ========================= */
+
 function swap<T>(arr: T[], i: number, j: number): T[] {
   const copy = arr.slice();
   const tmp = copy[i];
@@ -464,6 +763,474 @@ function swap<T>(arr: T[], i: number, j: number): T[] {
   copy[j] = tmp;
   return copy;
 }
+
+function hasAnyInput(players: Player[]): boolean {
+  return players.some((p) => {
+    if (p.eyelineCountForX5 > 0) return true;
+    if (p.decorCount > 0) return true;
+    if (p.completeBoard) return true;
+    if (p.penalties.emptyCorners > 0 || p.penalties.unplacedPaintings > 0) return true;
+    return COLORS.some((c) => p.paintings[c] > 0);
+  });
+}
+
+function defaultPlayer(i: number): Player {
+  return {
+    id: `p${i}`,
+    name: `Player ${i}`,
+    paintings: { red: 0, blue: 0, yellow: 0, green: 0 },
+    eyelineCountForX5: 0,
+    decorCount: 0,
+    completeBoard: false,
+    penalties: { emptyCorners: 0, unplacedPaintings: 0 },
+  };
+}
+
+/* =========================
+   Page
+   ========================= */
+
+export default function Page() {
+  // Global UI options
+  const [leftHanded, setLeftHanded] = useState(false);
+  const [palette, setPalette] = useState<"default" | "deuteranopia" | "protanopia" | "tritanopia">("default");
+
+  // Game state
+  const [prestige, setPrestige] = useState<PrestigeOrderItem[]>(DEFAULT_PRESTIGE);
+  const [players, setPlayers] = useState<Player[]>([defaultPlayer(1), defaultPlayer(2)]);
+  const [resultsMode, setResultsMode] = useState(false);
+  const [announceMsg, setAnnounceMsg] = useState<string>("");
+
+  // Identity library + lineups
+  const [library, setLibrary] = useState<PlayerIdentity[]>([]);
+  const [lineups, setLineups] = useState<Lineup[]>([]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-left-handed", String(leftHanded));
+  }, [leftHanded]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-palette", palette);
+  }, [palette]);
+
+  useEffect(() => {
+    // Load identity data
+    setLibrary(loadLibrary());
+    setLineups(loadLineups());
+  }, []);
+
+  const locked = useMemo(() => hasAnyInput(players), [players]);
+  const x5Color = findX5Color(prestige);
+  const multipliers = useMemo(() => multiplierMap(prestige), [prestige]);
+
+  // Auto-hide toast after 2.5s
+  useEffect(() => {
+    if (!announceMsg) return;
+    const t = setTimeout(() => setAnnounceMsg(""), 2500);
+    return () => clearTimeout(t);
+  }, [announceMsg]);
+
+  const setPlayerAt = (idx: number, patch: Player) => {
+    setPlayers((ps) => ps.map((p, i) => (i === idx ? patch : p)));
+  };
+
+  const addPlayer = () => {
+    setPlayers((ps) => {
+      if (ps.length >= 4) return ps;
+      const nextIndex = ps.length + 1;
+      return [...ps, defaultPlayer(nextIndex)];
+    });
+  };
+  const removePlayer = () => {
+    setPlayers((ps) => (ps.length <= 2 ? ps : ps.slice(0, ps.length - 1)));
+  };
+
+  // Identity operations
+  const assignIdentity = (idx: number, playerId: string, fallbackName?: string) => {
+    setPlayers((ps) => {
+      // Determine chosen name from library or fallback
+      const chosenObj = library.find((l) => l.id === playerId);
+      const chosenName = chosenObj?.displayName ?? fallbackName ?? `Player ${idx + 1}`;
+
+      // Prevent duplicate selection within same game; offer swap
+      const existingIdx = ps.findIndex((p, i) => i !== idx && p.playerId === playerId);
+      if (existingIdx !== -1) {
+        const other = ps[existingIdx];
+        const confirmSwap = window.confirm(
+          `${chosenName} is already on Player ${existingIdx + 1}. Swap to Player ${idx + 1}?`
+        );
+        if (!confirmSwap) return ps;
+        // Clear other
+        const cleared = { ...other, playerId: undefined, name: `Player ${existingIdx + 1}` };
+        // Assign here
+        const current = ps[idx];
+        const assigned = { ...current, playerId, name: chosenName };
+        const next = ps.slice();
+        next[existingIdx] = cleared;
+        next[idx] = assigned;
+        return next;
+      }
+      // Normal assign
+      const current = ps[idx];
+      const finalName = chosenObj?.displayName ?? fallbackName ?? current.name;
+      return ps.map((p, i) => (i === idx ? { ...current, playerId, name: finalName } : p));
+    });
+  };
+
+  const createIdentity = (rawName: string, onAssigned: (id: string, displayName: string) => void) => {
+    const displayName = rawName.trim();
+    if (!displayName) return;
+    const canonical = canonicalizeName(displayName);
+    setLibrary((lib) => {
+      const exists = lib.find((p) => p.canonical === canonical);
+      if (exists) {
+        // Update display name casing if different
+        if (exists.displayName !== displayName) {
+          const updated = lib.map((p) => (p.id === exists.id ? { ...p, displayName } : p));
+          saveLibrary(updated);
+          onAssigned(exists.id, displayName);
+          return updated;
+        }
+        onAssigned(exists.id, exists.displayName);
+        return lib;
+      }
+      const id = ulidLike();
+      const now = new Date().toISOString();
+      const created: PlayerIdentity = {
+        id,
+        canonical,
+        displayName,
+        createdAt: now,
+        gamesPlayed: 0,
+      };
+      const next = [created, ...lib];
+      saveLibrary(next);
+      onAssigned(id, displayName);
+      // One-time toast for first creation
+      try {
+        const flag = localStorage.getItem(LIB_KEYS.firstCreatedFlag);
+        if (!flag) {
+          setAnnounceMsg(`✓ ${displayName} has been saved to your player library.`);
+          localStorage.setItem(LIB_KEYS.firstCreatedFlag, "true");
+        }
+      } catch { /* ignore */ }
+      return next;
+    });
+  };
+
+  // "Use last lineup?" subtle link (show only when applicable)
+  const lastLineupForSize = useMemo(() => {
+    const size = players.length;
+    const matches = lineups.filter((l) => l.size === size);
+    if (matches.length === 0) return undefined;
+    return matches.slice().sort((a, b) => Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt))[0];
+  }, [lineups, players.length]);
+
+  const allCardsUnassigned = useMemo(
+    () => players.every((p, idx) => !p.playerId && (p.name === `Player ${idx + 1}` || !p.name)),
+    [players]
+  );
+
+  const applyLastLineup = () => {
+    if (!lastLineupForSize) return;
+    const mapById = new Map(library.map((x) => [x.id, x]));
+    setPlayers((ps) =>
+      ps.map((p, i) => {
+        const pid = lastLineupForSize.playerIds[i];
+        const id = pid && mapById.get(pid) ? pid : undefined;
+        const name = id ? mapById.get(id)!.displayName : `Player ${i + 1}`;
+        return { ...p, playerId: id, name };
+      })
+    );
+  };
+
+  const canCalculate = hasAnyInput(players);
+
+  const calculate = () => {
+    // compute scores and switch to results
+    const withScores = players.map((p) => {
+      const { finalScore, breakdown } = computeScore(p, multipliers, x5Color);
+      return { ...p, finalScore, breakdown };
+    });
+
+    // Sort: finalScore desc, tiebreak decorCount desc, then name asc
+    withScores.sort((a, b) => {
+      const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+      if (d !== 0) return d;
+      const d2 = b.decorCount - a.decorCount;
+      if (d2 !== 0) return d2;
+      return a.name.localeCompare(b.name);
+    });
+
+    setPlayers(withScores);
+    setResultsMode(true);
+  };
+
+  const saveGame = () => {
+    const data: Game = {
+      id: `g-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      prestigeOrder: prestige,
+      players,
+      version: 1,
+    };
+    try {
+      // Update history
+      const hxRaw = localStorage.getItem(LIB_KEYS.history);
+      const existing = hxRaw ? (JSON.parse(hxRaw) as Game[]) : [];
+      existing.unshift(data);
+      localStorage.setItem(LIB_KEYS.history, JSON.stringify(existing));
+
+      // Update library stats
+      const idsUsed = players.map((p) => p.playerId).filter(Boolean) as string[];
+      if (idsUsed.length > 0) {
+        const now = new Date().toISOString();
+        setLibrary((lib) => {
+          const setIds = new Set(idsUsed);
+          const updated = lib.map((pl) =>
+            setIds.has(pl.id)
+              ? {
+                  ...pl,
+                  lastPlayedAt: now,
+                  gamesPlayed: (pl.gamesPlayed ?? 0) + 1,
+                }
+              : pl
+          );
+          saveLibrary(updated);
+          return updated;
+        });
+
+        // Update lineup with exact order if all assigned
+        if (idsUsed.length === players.length) {
+          setLineups((ls) => {
+            const size = players.length;
+            const signature = idsUsed.join("|");
+            let found = ls.find((l) => l.size === size && l.playerIds.join("|") === signature);
+            const nowIso = new Date().toISOString();
+            if (found) {
+              found.uses += 1;
+              found.lastUsedAt = nowIso;
+              const next = ls.slice();
+              saveLineups(next);
+              return next;
+            } else {
+              const newEntry: Lineup = {
+                id: ulidLike(),
+                size,
+                playerIds: idsUsed,
+                lastUsedAt: nowIso,
+                uses: 1,
+              };
+              const next = [newEntry, ...ls];
+              saveLineups(next);
+              return next;
+            }
+          });
+        }
+      }
+
+      setAnnounceMsg("Saved to History");
+    } catch {
+      setAnnounceMsg("Save failed. Check connection and try again.");
+    }
+  };
+
+  const startNew = () => {
+    setPrestige(DEFAULT_PRESTIGE);
+    setPlayers([defaultPlayer(1), defaultPlayer(2)]);
+    setResultsMode(false);
+    setAnnounceMsg("");
+  };
+
+  return (
+    <main className="stack" style={{ paddingBottom: 80 }}>
+      {/* Header */}
+      <header className="stack" style={{ gap: 4, marginTop: 16 }}>
+        <h1 className="h1" style={{ textAlign: "center" }}>
+          Art Society Scorer
+        </h1>
+        <div className="row" style={{ justifyContent: "center", gap: 8 }}>
+          <label className="toggle" htmlFor="left-handed" style={{ gap: 8 }}>
+            <input
+              id="left-handed"
+              type="checkbox"
+              checked={leftHanded}
+              onChange={(e) => setLeftHanded(e.target.checked)}
+              aria-label="Left-handed mode"
+            />
+            <span className="track">
+              <span className="thumb" />
+            </span>
+            <span>Left-handed</span>
+          </label>
+          <div className="row" style={{ gap: 8 }}>
+            <label className="caption" htmlFor="palette">
+              Palette
+            </label>
+            <select
+              id="palette"
+              value={palette}
+              onChange={(e) =>
+                setPalette(e.target.value as typeof palette)
+              }
+              style={{
+                borderRadius: 10,
+                border: "1px solid rgba(13,27,42,0.18)",
+                padding: "6px 10px",
+                background: "white",
+              }}
+              aria-label="Color-blind palette"
+            >
+              <option value="default">Default</option>
+              <option value="deuteranopia">Deuteranopia</option>
+              <option value="protanopia">Protanopia</option>
+              <option value="tritanopia">Tritanopia</option>
+            </select>
+          </div>
+        </div>
+      </header>
+
+      {!resultsMode ? (
+        <>
+          {/* Setup */}
+          <PrestigeTrack order={prestige} setOrder={locked ? () => {} : setPrestige} locked={locked} />
+
+          {/* Player count controls */}
+          <section className="card">
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <div className="section-title">Players</div>
+              <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                {/* Subtle power-user link: Use last lineup? */}
+                {lastLineupForSize && allCardsUnassigned && (
+                  <button
+                    className="btn btn-outline"
+                    onClick={applyLastLineup}
+                    aria-label="Use last lineup"
+                    style={{
+                      height: 28,
+                      paddingInline: 8,
+                      borderColor: "transparent",
+                      color: "rgba(13,27,42,0.8)",
+                      textDecoration: "underline",
+                    }}
+                  >
+                    Use last lineup?
+                  </button>
+                )}
+                <button
+                  className="btn btn-outline"
+                  onClick={removePlayer}
+                  disabled={players.length <= 2}
+                  aria-label="Remove player"
+                >
+                  −
+                </button>
+                <div aria-live="polite" style={{ minWidth: 40, textAlign: "center" }}>
+                  {players.length}
+                </div>
+                <button
+                  className="btn btn-outline"
+                  onClick={addPlayer}
+                  disabled={players.length >= 4}
+                  aria-label="Add player"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Player cards */}
+          {players.map((p, idx) => {
+            const selectedIdsExcludingSelf = players
+              .map((pp, ii) => (ii === idx ? undefined : pp.playerId))
+              .filter(Boolean) as string[];
+            return (
+              <PlayerCard
+                key={p.id}
+                index={idx}
+                player={p}
+                setPlayer={(np) => setPlayerAt(idx, np)}
+                multipliers={multipliers}
+                x5Color={x5Color}
+                locked={locked}
+                announce={(msg) => setAnnounceMsg(msg)}
+                order={prestige}
+                library={library}
+                selectedIdsExcludingSelf={selectedIdsExcludingSelf}
+                assignIdentity={assignIdentity}
+                createIdentity={createIdentity}
+                setToast={setAnnounceMsg}
+              />
+            );
+          })}
+
+          {/* Footer calculate */}
+          <div className="footer-bar">
+            <div className="footer-utility">
+              <div className="caption" aria-live="polite">
+                {locked ? "Prestige order locked" : "Set up Prestige order"}
+              </div>
+              <button
+                className="btn btn-primary"
+                disabled={!canCalculate}
+                onClick={calculate}
+                aria-disabled={!canCalculate}
+              >
+                Calculate Scores
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <Results
+          playersSorted={players.map((p, i) => ({
+            name: p.name,
+            finalScore: p.finalScore ?? 0,
+            breakdown: p.breakdown as Breakdown,
+            rank: i + 1,
+            decorCount: p.decorCount,
+          }))}
+          onSave={saveGame}
+          onNew={startNew}
+        />
+      )}
+
+      {/* Visible toast */}
+      {announceMsg ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="toast"
+          style={{
+            position: "fixed",
+            left: 16,
+            right: 16,
+            bottom: 88,
+            zIndex: 50,
+            borderRadius: 10,
+            background: "color-mix(in oklab, var(--navy) 92%, black)",
+            color: "white",
+            padding: "10px 12px",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+            textAlign: "center",
+          }}
+        >
+          {announceMsg}
+        </div>
+      ) : null}
+
+      {/* SR-only live region for other announcements */}
+      <div className="visually-hidden" aria-live="polite">
+        {announceMsg}
+      </div>
+    </main>
+  );
+}
+
+/* =========================
+   Prestige Track
+   ========================= */
 
 function PrestigeTrack({
   order,
@@ -540,6 +1307,10 @@ function PrestigeTrack({
     </section>
   );
 }
+
+/* =========================
+   Results (unchanged except wording)
+   ========================= */
 
 type ResultsPlayer = {
   name: string;
@@ -697,280 +1468,5 @@ function Results({
         </div>
       </div>
     </div>
-  );
-}
-
-function hasAnyInput(players: Player[]): boolean {
-  return players.some((p) => {
-    if (p.eyelineCountForX5 > 0) return true;
-    if (p.decorCount > 0) return true;
-    if (p.completeBoard) return true;
-    if (p.penalties.emptyCorners > 0 || p.penalties.unplacedPaintings > 0) return true;
-    return COLORS.some((c) => p.paintings[c] > 0);
-  });
-}
-
-function defaultPlayer(i: number): Player {
-  // Stable id, avoids hydration mismatch (no randomness)
-  return {
-    id: `p${i}`,
-    name: `Player ${i}`,
-    paintings: { red: 0, blue: 0, yellow: 0, green: 0 },
-    eyelineCountForX5: 0,
-    decorCount: 0,
-    completeBoard: false,
-    penalties: { emptyCorners: 0, unplacedPaintings: 0 },
-  };
-}
-
-export default function Page() {
-  // Global UI options
-  const [leftHanded, setLeftHanded] = useState(false);
-  const [palette, setPalette] = useState<"default" | "deuteranopia" | "protanopia" | "tritanopia">("default");
-
-  // Game state
-  const [prestige, setPrestige] = useState<PrestigeOrderItem[]>(DEFAULT_PRESTIGE);
-  const [players, setPlayers] = useState<Player[]>([defaultPlayer(1), defaultPlayer(2)]);
-  const [resultsMode, setResultsMode] = useState(false);
-  const [announceMsg, setAnnounceMsg] = useState<string>("");
-
-  const locked = useMemo(() => hasAnyInput(players), [players]);
-  const x5Color = findX5Color(prestige);
-  const multipliers = useMemo(() => multiplierMap(prestige), [prestige]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-left-handed", String(leftHanded));
-  }, [leftHanded]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-palette", palette);
-  }, [palette]);
-
-  // Auto-hide toast after 2.5s
-  useEffect(() => {
-    if (!announceMsg) return;
-    const t = setTimeout(() => setAnnounceMsg(""), 2500);
-    return () => clearTimeout(t);
-  }, [announceMsg]);
-
-  const setPlayerAt = (idx: number, patch: Player) => {
-    setPlayers((ps) => ps.map((p, i) => (i === idx ? patch : p)));
-  };
-
-  const addPlayer = () => {
-    setPlayers((ps) => {
-      if (ps.length >= 4) return ps;
-      const nextIndex = ps.length + 1;
-      return [...ps, defaultPlayer(nextIndex)];
-    });
-  };
-  const removePlayer = () => {
-    setPlayers((ps) => (ps.length <= 2 ? ps : ps.slice(0, ps.length - 1)));
-  };
-
-  const canCalculate = hasAnyInput(players);
-
-  const calculate = () => {
-    // compute scores and switch to results
-    const withScores = players.map((p) => {
-      const { finalScore, breakdown } = computeScore(p, multipliers, x5Color);
-      return { ...p, finalScore, breakdown };
-    });
-
-    // Sort: finalScore desc, tiebreak decorCount desc, then name asc
-    withScores.sort((a, b) => {
-      const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-      if (d !== 0) return d;
-      const d2 = b.decorCount - a.decorCount;
-      if (d2 !== 0) return d2;
-      return a.name.localeCompare(b.name);
-    });
-
-    setPlayers(withScores);
-    setResultsMode(true);
-  };
-
-  const saveGame = () => {
-    const data: Game = {
-      id: `g-${Date.now()}`, // not rendered in markup; allowed to be dynamic
-      createdAt: new Date().toISOString(),
-      prestigeOrder: prestige,
-      players,
-      version: 1,
-    };
-    try {
-      const key = "art-society:history";
-      const existing = JSON.parse(localStorage.getItem(key) || "[]") as Game[];
-      existing.unshift(data);
-      localStorage.setItem(key, JSON.stringify(existing));
-      setAnnounceMsg("Saved to History");
-    } catch {
-      setAnnounceMsg("Save failed. Check connection and try again.");
-    }
-  };
-
-  const startNew = () => {
-    setPrestige(DEFAULT_PRESTIGE);
-    setPlayers([defaultPlayer(1), defaultPlayer(2)]);
-    setResultsMode(false);
-    setAnnounceMsg("");
-  };
-
-  return (
-    <main className="stack" style={{ paddingBottom: 80 }}>
-      {/* Header */}
-      <header className="stack" style={{ gap: 4, marginTop: 16 }}>
-        <h1 className="h1" style={{ textAlign: "center" }}>
-          Art Society Scorer
-        </h1>
-        <div className="row" style={{ justifyContent: "center", gap: 8 }}>
-          <label className="toggle" htmlFor="left-handed" style={{ gap: 8 }}>
-            <input
-              id="left-handed"
-              type="checkbox"
-              checked={leftHanded}
-              onChange={(e) => setLeftHanded(e.target.checked)}
-              aria-label="Left-handed mode"
-            />
-            <span className="track">
-              <span className="thumb" />
-            </span>
-            <span>Left-handed</span>
-          </label>
-          <div className="row" style={{ gap: 8 }}>
-            <label className="caption" htmlFor="palette">
-              Palette
-            </label>
-            <select
-              id="palette"
-              value={palette}
-              onChange={(e) =>
-                setPalette(e.target.value as typeof palette)
-              }
-              style={{
-                borderRadius: 10,
-                border: "1px solid rgba(13,27,42,0.18)",
-                padding: "6px 10px",
-                background: "white",
-              }}
-              aria-label="Color-blind palette"
-            >
-              <option value="default">Default</option>
-              <option value="deuteranopia">Deuteranopia</option>
-              <option value="protanopia">Protanopia</option>
-              <option value="tritanopia">Tritanopia</option>
-            </select>
-          </div>
-        </div>
-      </header>
-
-      {!resultsMode ? (
-        <>
-          {/* Setup */}
-          <PrestigeTrack order={prestige} setOrder={locked ? () => {} : setPrestige} locked={locked} />
-
-          {/* Player count controls */}
-          <section className="card">
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <div className="section-title">Players</div>
-              <div className="row" style={{ gap: 8 }}>
-                <button
-                  className="btn btn-outline"
-                  onClick={removePlayer}
-                  disabled={players.length <= 2}
-                  aria-label="Remove player"
-                >
-                  −
-                </button>
-                <div aria-live="polite" style={{ minWidth: 40, textAlign: "center" }}>
-                  {players.length}
-                </div>
-                <button
-                  className="btn btn-outline"
-                  onClick={addPlayer}
-                  disabled={players.length >= 4}
-                  aria-label="Add player"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-          </section>
-
-          {/* Player cards */}
-          {players.map((p, idx) => (
-            <PlayerCard
-              key={p.id}
-              index={idx}
-              player={p}
-              setPlayer={(np) => setPlayerAt(idx, np)}
-              multipliers={multipliers}
-              x5Color={x5Color}
-              locked={locked}
-              announce={(msg) => setAnnounceMsg(msg)}
-              order={prestige}
-            />
-          ))}
-
-          {/* Footer calculate */}
-          <div className="footer-bar">
-            <div className="footer-utility">
-              <div className="caption" aria-live="polite">
-                {locked ? "Prestige order locked" : "Set up Prestige order"}
-              </div>
-              <button
-                className="btn btn-primary"
-                disabled={!canCalculate}
-                onClick={calculate}
-                aria-disabled={!canCalculate}
-              >
-                Calculate Scores
-              </button>
-            </div>
-          </div>
-        </>
-      ) : (
-        <Results
-          playersSorted={players.map((p, i) => ({
-            name: p.name,
-            finalScore: p.finalScore ?? 0,
-            breakdown: p.breakdown as Breakdown,
-            rank: i + 1,
-            decorCount: p.decorCount,
-          }))}
-          onSave={saveGame}
-          onNew={startNew}
-        />
-      )}
-
-      {/* Visible toast */}
-      {announceMsg ? (
-        <div
-          role="status"
-          aria-live="polite"
-          className="toast"
-          style={{
-            position: "fixed",
-            left: 16,
-            right: 16,
-            bottom: 88,
-            zIndex: 50,
-            borderRadius: 10,
-            background: "color-mix(in oklab, var(--navy) 92%, black)",
-            color: "white",
-            padding: "10px 12px",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
-            textAlign: "center",
-          }}
-        >
-          {announceMsg}
-        </div>
-      ) : null}
-
-      {/* SR-only live region for other announcements */}
-      <div className="visually-hidden" aria-live="polite">
-        {announceMsg}
-      </div>
-    </main>
   );
 }
