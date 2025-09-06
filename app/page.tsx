@@ -165,7 +165,8 @@ const DEFAULT_PRESTIGE: PrestigeOrderItem[] = [
 ];
 
 function colorLabel(color: Color): string {
-  return color[0].toUpperCase() + color.slice(1);
+  // charAt(0) safely returns "" for empty strings, avoiding TS "possibly undefined"
+  return color.charAt(0).toUpperCase() + color.slice(1);
 }
 
 function multiplierMap(order: PrestigeOrderItem[]): Record<Color, Multiplier> {
@@ -1633,7 +1634,7 @@ function ArchivesModal({
                               </div>
                               {Object.entries(pl.breakdown.perColor as Record<string, any>).map(([k, v]) => (
                                 <div key={k} className="row" style={{ justifyContent: "space-between" }}>
-                                  <span>{k[0].toUpperCase() + k.slice(1)} {v.tiles} × ×{v.multiplier} =</span>
+                                  <span>{k.charAt(0).toUpperCase() + k.slice(1)} {v.tiles} × ×{v.multiplier} =</span>
                                   <span>{v.points}</span>
                                 </div>
                               ))}
