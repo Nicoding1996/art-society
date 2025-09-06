@@ -1674,7 +1674,7 @@ function ArchivesModal({
                   <th>Wins</th>
                   <th>Games</th>
                   <th>Avg. Score</th>
-                  <th>High</th>
+                  <th>Highscore</th>
                 </tr>
               </thead>
               <tbody>
