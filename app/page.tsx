@@ -859,25 +859,26 @@ export default function Page() {
       // Prevent duplicate selection within same game; offer swap
       const existingIdx = ps.findIndex((p, i) => i !== idx && p.playerId === playerId);
       if (existingIdx !== -1) {
-        const other = ps[existingIdx];
+        const other = ps[existingIdx]!;
         const confirmSwap = window.confirm(
           `${chosenName} is already on Player ${existingIdx + 1}. Swap to Player ${idx + 1}?`
         );
         if (!confirmSwap) return ps;
         // Clear other
-        const cleared = { ...other, playerId: undefined, name: `Player ${existingIdx + 1}` };
+        const cleared: Player = { ...other, playerId: undefined, name: `Player ${existingIdx + 1}` };
         // Assign here
-        const current = ps[idx];
-        const assigned = { ...current, playerId, name: chosenName };
+        const current: Player = ps[idx]!;
+        const assigned: Player = { ...current, playerId, name: chosenName };
         const next = ps.slice();
         next[existingIdx] = cleared;
         next[idx] = assigned;
         return next;
       }
       // Normal assign
-      const current = ps[idx];
+      const current: Player = ps[idx]!;
       const finalName = chosenObj?.displayName ?? fallbackName ?? current.name;
-      return ps.map((p, i) => (i === idx ? { ...current, playerId, name: finalName } : p));
+      const updated: Player = { ...current, playerId, name: finalName };
+      return ps.map((p, i) => (i === idx ? updated : p));
     });
   };
 
