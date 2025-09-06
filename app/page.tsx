@@ -804,6 +804,7 @@ export default function Page() {
   // Identity library + lineups
   const [library, setLibrary] = useState<PlayerIdentity[]>([]);
   const [lineups, setLineups] = useState<Lineup[]>([]);
+  const [showArchives, setShowArchives] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-left-handed", String(leftHanded));
@@ -921,10 +922,13 @@ export default function Page() {
   // "Use last lineup?" subtle link (show only when applicable)
   const lastLineupForSize = useMemo(() => {
     const size = players.length;
-    const matches = lineups.filter((l) => l.size === size);
-    if (matches.length === 0) return undefined;
-    return matches.slice().sort((a, b) => Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt))[0];
-  }, [lineups, players.length]);
+    // Only consider complete lineups with correct length and resolvable ids
+    const complete = lineups
+      .filter((l) => l.size === size && l.playerIds.length === size)
+      .filter((l) => l.playerIds.every((id) => library.some((p) => p.id === id)));
+    if (complete.length === 0) return undefined;
+    return complete.slice().sort((a, b) => Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt))[0];
+  }, [lineups, players.length, library]);
 
   const allCardsUnassigned = useMemo(
     () => players.every((p, idx) => !p.playerId && (p.name === `Player ${idx + 1}` || !p.name)),
@@ -933,15 +937,25 @@ export default function Page() {
 
   const applyLastLineup = () => {
     if (!lastLineupForSize) return;
-    const mapById = new Map(library.map((x) => [x.id, x]));
+    // Refresh library from storage to avoid stale state
+    let lib = library;
+    try {
+      lib = loadLibrary();
+    } catch {}
+    const mapById = new Map(lib.map((x) => [x.id, x]));
     setPlayers((ps) =>
       ps.map((p, i) => {
         const pid = lastLineupForSize.playerIds[i];
-        const id = pid && mapById.get(pid) ? pid : undefined;
-        const name = id ? mapById.get(id)!.displayName : `Player ${i + 1}`;
-        return { ...p, playerId: id, name };
+        if (pid && mapById.has(pid)) {
+          const id = pid;
+          const display = mapById.get(id)!.displayName;
+          return { ...p, playerId: id, name: display };
+        }
+        // Keep existing assignment/name if missing, otherwise fallback
+        return { ...p, playerId: p.playerId, name: p.name || `Player ${i + 1}` };
       })
     );
+    setAnnounceMsg("Last lineup applied");
   };
 
   const canCalculate = hasAnyInput(players);
@@ -981,10 +995,23 @@ export default function Page() {
       existing.unshift(data);
       localStorage.setItem(LIB_KEYS.history, JSON.stringify(existing));
 
-      // Update library stats
+      // Update library stats (gamesPlayed, lastPlayedAt, wins)
       const idsUsed = players.map((p) => p.playerId).filter(Boolean) as string[];
       if (idsUsed.length > 0) {
         const now = new Date().toISOString();
+        // Determine winner if all assigned have scores
+        let winnerId: string | undefined;
+        if (players.every((p) => typeof p.finalScore === "number" && p.playerId)) {
+          const sorted = players.slice().sort((a, b) => {
+            const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+            if (d !== 0) return d;
+            const d2 = b.decorCount - a.decorCount;
+            if (d2 !== 0) return d2;
+            return a.name.localeCompare(b.name);
+          });
+          winnerId = sorted[0].playerId;
+        }
+
         setLibrary((lib) => {
           const setIds = new Set(idsUsed);
           const updated = lib.map((pl) =>
@@ -993,6 +1020,7 @@ export default function Page() {
                   ...pl,
                   lastPlayedAt: now,
                   gamesPlayed: (pl.gamesPlayed ?? 0) + 1,
+                  wins: pl.id === winnerId ? (pl.wins ?? 0) + 1 : pl.wins ?? 0,
                 }
               : pl
           );
@@ -1087,6 +1115,14 @@ export default function Page() {
               <option value="tritanopia">Tritanopia</option>
             </select>
           </div>
+          <button
+            className="btn btn-outline"
+            aria-label="Open Game Archives"
+            style={{ height: 32 }}
+            onClick={() => setShowArchives(true)}
+          >
+            Archives
+          </button>
         </div>
       </header>
 
@@ -1224,6 +1260,14 @@ export default function Page() {
       <div className="visually-hidden" aria-live="polite">
         {announceMsg}
       </div>
+
+      {/* Archives modal */}
+      {showArchives ? (
+        <ArchivesModal
+          close={() => setShowArchives(false)}
+          library={library}
+        />
+      ) : null}
     </main>
   );
 }
@@ -1467,6 +1511,188 @@ function Results({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+/* =========================
+   Archives Modal (History + Leaderboard)
+   ========================= */
+
+function ArchivesModal({
+  close,
+  library,
+}: {
+  close: () => void;
+  library: PlayerIdentity[];
+}) {
+  const [tab, setTab] = useState<"history" | "leaderboard">("history");
+  const [history, setHistory] = useState<Game[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LIB_KEYS.history);
+      setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
+    } catch {
+      setHistory([]);
+    }
+  }, []);
+
+  // Leaderboard derived from library (wins desc default, then gamesPlayed desc, then name asc)
+  const leaderboard = useMemo(() => {
+    const rows = [...library].map((p) => ({
+      id: p.id,
+      name: p.displayName,
+      wins: p.wins ?? 0,
+      games: p.gamesPlayed ?? 0,
+      avg: 0,
+      high: 0,
+    }));
+    // Derive avg/high from saved games if available
+    try {
+      const raw = localStorage.getItem(LIB_KEYS.history);
+      const hx = raw ? (JSON.parse(raw) as Game[]) : [];
+      const sums = new Map<string, { total: number; count: number; high: number }>();
+      for (const g of hx) {
+        for (const pl of g.players) {
+          if (!pl.playerId || typeof pl.finalScore !== "number") continue;
+          const rec = sums.get(pl.playerId) ?? { total: 0, count: 0, high: 0 };
+          rec.total += pl.finalScore ?? 0;
+          rec.count += 1;
+          rec.high = Math.max(rec.high, pl.finalScore ?? 0);
+          sums.set(pl.playerId, rec);
+        }
+      }
+      rows.forEach((r) => {
+        const rec = sums.get(r.id);
+        if (rec && rec.count > 0) {
+          r.avg = Math.round((rec.total / rec.count) * 10) / 10;
+          r.high = rec.high;
+        }
+      });
+    } catch {
+      // ignore
+    }
+    rows.sort((a, b) => {
+      const d = b.wins - a.wins;
+      if (d !== 0) return d;
+      const d2 = b.games - a.games;
+      if (d2 !== 0) return d2;
+      return a.name.localeCompare(b.name);
+    });
+    return rows;
+  }, [library]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="card"
+      style={{
+        position: "fixed",
+        inset: 16,
+        zIndex: 60,
+        background: "var(--cream)",
+        overflow: "auto",
+      }}
+    >
+      <div className="card-header">
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <h2 className="h2" style={{ margin: 0 }}>Game Archives</h2>
+          <div className="row" role="tablist" aria-label="Archives tabs" style={{ gap: 8 }}>
+            <button
+              role="tab"
+              aria-selected={tab === "history"}
+              className="btn btn-outline"
+              style={{ height: 32, paddingInline: 10 }}
+              onClick={() => setTab("history")}
+            >
+              Game History
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "leaderboard"}
+              className="btn btn-outline"
+              style={{ height: 32, paddingInline: 10 }}
+              onClick={() => setTab("leaderboard")}
+            >
+              Player Leaderboard
+            </button>
+          </div>
+        </div>
+        <button className="btn btn-outline" style={{ height: 32 }} onClick={close} aria-label="Close archives">
+          Close
+        </button>
+      </div>
+
+      {tab === "history" ? (
+        <div className="stack" style={{ gap: 8 }}>
+          {history.length === 0 ? (
+            <div className="caption" style={{ padding: 8 }}>No saved games yet. Play a game and save results.</div>
+          ) : (
+            history.map((g) => {
+              const date = new Date(g.createdAt).toLocaleString();
+              // Determine winner (by finalScore desc, then decorCount desc, then name asc)
+              const withScores = g.players
+                .map((p) => ({ ...p }))
+                .sort((a, b) => {
+                  const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+                  if (d !== 0) return d;
+                  const d2 = b.decorCount - a.decorCount;
+                  if (d2 !== 0) return d2;
+                  return a.name.localeCompare(b.name);
+                });
+              const winner = withScores[0];
+              return (
+                <section key={g.id} className="card" style={{ padding: 12 }}>
+                  <div className="row" style={{ justifyContent: "space-between" }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{date}</div>
+                      <div className="caption">Players: {g.players.map((p) => p.name).join(", ")}</div>
+                    </div>
+                    <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                      <span aria-hidden style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--celebration-gold)" }} />
+                      <div className="caption">Winner</div>
+                      <div style={{ fontWeight: 700 }}>{winner?.name ?? "—"}</div>
+                      <div style={{ fontWeight: 700 }}>{winner?.finalScore ?? 0}</div>
+                    </div>
+                  </div>
+                </section>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        <section className="card" style={{ padding: 12 }}>
+          {leaderboard.length === 0 ? (
+            <div className="caption" style={{ padding: 8 }}>No leaderboard yet. Save games to build stats.</div>
+          ) : (
+            <table className="table" role="table" aria-label="Player leaderboard">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Player</th>
+                  <th>Wins</th>
+                  <th>Games</th>
+                  <th>Avg. Score</th>
+                  <th>High</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaderboard.map((r, i) => (
+                  <tr key={r.id}>
+                    <td>#{i + 1}</td>
+                    <td>{r.name}</td>
+                    <td>{r.wins}</td>
+                    <td>{r.games}</td>
+                    <td>{r.avg}</td>
+                    <td>{r.high}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
     </div>
   );
 }
