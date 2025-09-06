@@ -6,8 +6,8 @@ import { getSupabaseAdmin } from "../../../lib/supabase-server";
 
 function envDiagnostics() {
   return {
-    url: (process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "").trim(),
-    urlHasHttps: (process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "").trim().startsWith("https://"),
+    url: (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim(),
+    urlHasHttps: (process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").trim().startsWith("https://"),
     serviceKeyLen: (process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim().length,
   };
 }
@@ -59,22 +59,57 @@ export async function GET() {
       }
     }
 
-    const leaderboard = (players ?? []).map((p: any) => {
-      const rec = sums.get(p.id);
+    // Build leaderboard from union of players table and snapshot-derived sums.
+    // Also derive wins and lastPlayedAt from history when players table rows are missing.
+    const winsFromHistory = new Map<string, number>();
+    const lastNameById = new Map<string, string>();
+    const lastPlayedAtById = new Map<string, string>();
+
+    // Derive winners and last-seen names/timestamps from history
+    for (const g of history as any[]) {
+      const participants = (g.players as any[]).filter((pl) => !!pl?.playerId);
+      // Track last seen name and timestamp
+      for (const pl of participants) {
+        lastNameById.set(pl.playerId, pl.name || lastNameById.get(pl.playerId) || "Unknown");
+        lastPlayedAtById.set(pl.playerId, g.createdAt || lastPlayedAtById.get(pl.playerId) || null);
+      }
+      // Compute winner for this game (by score desc, decor desc, name asc)
+      const ranked = participants
+        .slice()
+        .filter((pl) => typeof pl.finalScore === "number")
+        .sort((a, b) => {
+          const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+          if (d !== 0) return d;
+          const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
+          if (d2 !== 0) return d2;
+          return (a.name || "").localeCompare(b.name || "");
+        });
+      const wId = ranked[0]?.playerId;
+      if (wId) winsFromHistory.set(wId, (winsFromHistory.get(wId) ?? 0) + 1);
+    }
+
+    const playersMap = new Map<string, any>((players ?? []).map((p: any) => [p.id, p]));
+    const allIds = new Set<string>([
+      ...Array.from(sums.keys()),
+      ...(players ?? []).map((p: any) => p.id),
+    ]);
+
+    const leaderboard = Array.from(allIds).map((id) => {
+      const pRow = playersMap.get(id);
+      const rec = sums.get(id);
       const avg = rec && rec.count > 0 ? Math.round((rec.total / rec.count) * 10) / 10 : 0;
       const high = rec ? rec.high : 0;
-      return {
-        id: p.id,
-        name: p.display_name,
-        wins: p.wins ?? 0,
-        games: p.games_played ?? 0,
-        avg,
-        high,
-        lastPlayedAt: p.last_played_at ?? null,
-      };
+      const wins = pRow?.wins ?? winsFromHistory.get(id) ?? 0;
+      const games = pRow?.games_played ?? (rec?.count ?? 0);
+      const name = pRow?.display_name ?? lastNameById.get(id) ?? "Unknown";
+      const lastPlayedAt = pRow?.last_played_at ?? lastPlayedAtById.get(id) ?? null;
+      return { id, name, wins, games, avg, high, lastPlayedAt };
     });
 
-    leaderboard.sort((a, b) => {
+    // Remove any entries that have zero games and zero stats to avoid noise
+    const filtered = leaderboard.filter((r) => r.games > 0 || r.wins > 0 || r.high > 0);
+
+    filtered.sort((a, b) => {
       const d = b.wins - a.wins;
       if (d !== 0) return d;
       const d2 = b.games - a.games;
@@ -82,7 +117,7 @@ export async function GET() {
       return a.name.localeCompare(b.name);
     });
 
-    return NextResponse.json({ ok: true, history, leaderboard });
+    return NextResponse.json({ ok: true, history, leaderboard: filtered });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message || String(err), env: envDiagnostics() }, { status: 500 });
   }

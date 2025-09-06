@@ -983,7 +983,7 @@ export default function Page() {
     setResultsMode(true);
   };
 
-  const saveGame = async () => {
+  const saveGame = async (): Promise<boolean> => {
     const data: Game = {
       id: `g-${Date.now()}`,
       createdAt: new Date().toISOString(),
@@ -1086,6 +1086,7 @@ export default function Page() {
       }
 
       setAnnounceMsg("Saved to Cloud");
+      return true;
     } catch (cloudErr) {
       console.warn("Cloud save failed, falling back to local save", cloudErr);
 
@@ -1156,8 +1157,10 @@ export default function Page() {
         }
 
         setAnnounceMsg("Saved locally (cloud unavailable)");
+        return true;
       } catch {
         setAnnounceMsg("Save failed. Check connection and try again.");
+        return false;
       }
     }
   };
@@ -1745,7 +1748,7 @@ function Results({
   onNew,
 }: {
   playersSorted: ResultsPlayer[];
-  onSave: () => void;
+  onSave: () => Promise<boolean>;
   onNew: () => void;
 }) {
   if (!playersSorted || playersSorted.length === 0) {
@@ -1759,6 +1762,21 @@ function Results({
 
   const winner = playersSorted[0]!;
   const rest = playersSorted.slice(1);
+
+  // Save button UX state
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    if (saving || saved) return;
+    setSaving(true);
+    try {
+      const ok = await onSave();
+      if (ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="stack" style={{ marginBottom: 80 }}>
@@ -1887,10 +1905,16 @@ function Results({
 
       <div className="footer-bar">
         <div className="row" style={{ justifyContent: "space-between" }}>
-          <button className="btn btn-primary" onClick={onSave}>
-            Save Game to History
+          <button
+            className="btn btn-primary"
+            onClick={handleSave}
+            disabled={saving || saved}
+            aria-busy={saving}
+            aria-disabled={saving || saved}
+          >
+            {saved ? "Saved" : saving ? "Saving…" : "Save Game to History"}
           </button>
-          <button className="btn btn-outline" onClick={onNew}>
+          <button className="btn btn-outline" onClick={onNew} disabled={saving} aria-disabled={saving}>
             Start New Game
           </button>
         </div>

@@ -39,7 +39,7 @@ async function resolvePlayerIdentities(
   // Collect players that need resolution and their canonicals
   const need = players
     .map((p) => ({ p, canonical: canonicalizeName(p?.name || "") }))
-    .filter((x) => !x.p.playerId && !!x.canonical && !/^player\s*\d+$/i.test((x.p?.name || "").trim()));
+    .filter((x) => !x.p.playerId && !!x.canonical);
 
   if (need.length === 0) return players;
 
