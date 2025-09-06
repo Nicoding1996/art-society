@@ -4,6 +4,14 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../../lib/supabase-server";
 
+function envDiagnostics() {
+  return {
+    url: (process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "").trim(),
+    urlHasHttps: (process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "").trim().startsWith("https://"),
+    serviceKeyLen: (process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim().length,
+  };
+}
+
 type Color = "red" | "blue" | "yellow" | "green";
 
 export async function GET() {
@@ -17,7 +25,7 @@ export async function GET() {
       .order("created_at", { ascending: false });
 
     if (gErr) {
-      return NextResponse.json({ ok: false, error: `Select games failed: ${gErr.message}` }, { status: 500 });
+      return NextResponse.json({ ok: false, error: `Select games failed: ${gErr.message}`, env: envDiagnostics() }, { status: 500 });
     }
 
     // Load players for leaderboard base
@@ -26,7 +34,7 @@ export async function GET() {
       .select("id, display_name, games_played, wins, last_played_at");
 
     if (pErr) {
-      return NextResponse.json({ ok: false, error: `Select players failed: ${pErr.message}` }, { status: 500 });
+      return NextResponse.json({ ok: false, error: `Select players failed: ${pErr.message}`, env: envDiagnostics() }, { status: 500 });
     }
 
     // Normalize history shape for client (createdAt, prestigeOrder, players, version)
@@ -76,6 +84,6 @@ export async function GET() {
 
     return NextResponse.json({ ok: true, history, leaderboard });
   } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: err?.message || String(err), env: envDiagnostics() }, { status: 500 });
   }
 }

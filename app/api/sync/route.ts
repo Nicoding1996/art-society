@@ -4,6 +4,14 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../../lib/supabase-server";
 
+function envDiagnostics() {
+  return {
+    url: (process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "").trim(),
+    urlHasHttps: (process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "").trim().startsWith("https://"),
+    serviceKeyLen: (process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim().length,
+  };
+}
+
 // Server-side copy of canonicalizeName to enforce constraints at write-time
 function canonicalizeName(raw: string): string {
   const trimmed = (raw || "").trim();
@@ -50,7 +58,7 @@ export async function POST(req: Request) {
         { onConflict: "id" }
       );
       if (error) {
-        return NextResponse.json({ ok: false, error: `Upsert game failed: ${error.message}` }, { status: 500 });
+        return NextResponse.json({ ok: false, error: `Upsert game failed: ${error.message}`, env: envDiagnostics() }, { status: 500 });
       }
     }
 
@@ -83,7 +91,7 @@ export async function POST(req: Request) {
         .select("*")
         .in("id", idsUsed);
       if (selErr) {
-        return NextResponse.json({ ok: false, error: `Select players failed: ${selErr.message}` }, { status: 500 });
+        return NextResponse.json({ ok: false, error: `Select players failed: ${selErr.message}`, env: envDiagnostics() }, { status: 500 });
       }
       const existMap = new Map<string, any>((existing ?? []).map((r) => [r.id, r]));
 
@@ -106,7 +114,7 @@ export async function POST(req: Request) {
 
       const { error: upErr } = await admin.from("players").upsert(upserts, { onConflict: "id" });
       if (upErr) {
-        return NextResponse.json({ ok: false, error: `Upsert players failed: ${upErr.message}` }, { status: 500 });
+        return NextResponse.json({ ok: false, error: `Upsert players failed: ${upErr.message}`, env: envDiagnostics() }, { status: 500 });
       }
     }
 
@@ -122,7 +130,7 @@ export async function POST(req: Request) {
         .maybeSingle();
 
       if (findErr) {
-        return NextResponse.json({ ok: false, error: `Select lineup failed: ${findErr.message}` }, { status: 500 });
+        return NextResponse.json({ ok: false, error: `Select lineup failed: ${findErr.message}`, env: envDiagnostics() }, { status: 500 });
       }
 
       if (found) {
@@ -131,7 +139,7 @@ export async function POST(req: Request) {
           .update({ uses: (found.uses ?? 0) + 1, last_used_at: now })
           .eq("id", lineupId);
         if (updErr) {
-          return NextResponse.json({ ok: false, error: `Update lineup failed: ${updErr.message}` }, { status: 500 });
+          return NextResponse.json({ ok: false, error: `Update lineup failed: ${updErr.message}`, env: envDiagnostics() }, { status: 500 });
         }
       } else {
         const { error: insErr } = await admin.from("lineups").insert({
@@ -142,7 +150,7 @@ export async function POST(req: Request) {
           uses: 1,
         });
         if (insErr) {
-          return NextResponse.json({ ok: false, error: `Insert lineup failed: ${insErr.message}` }, { status: 500 });
+          return NextResponse.json({ ok: false, error: `Insert lineup failed: ${insErr.message}`, env: envDiagnostics() }, { status: 500 });
         }
       }
     }
@@ -150,6 +158,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     const msg = err?.message || String(err);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json({ ok: false, error: msg, env: envDiagnostics() }, { status: 500 });
   }
 }
