@@ -252,7 +252,14 @@ export async function POST(req: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true });
+    // Return with debug counters to help verify cloud saves
+    return NextResponse.json({
+      ok: true,
+      id: resolvedGame.id,
+      playersSaved: resolvedPlayers.map((p) => ({ name: p.name, playerId: p.playerId ?? null })),
+      idsUsedCount: idsUsed.length,
+      winnerId: winnerId ?? null,
+    });
   } catch (err: any) {
     const msg = err?.message || String(err);
     return NextResponse.json({ ok: false, error: msg, env: envDiagnostics() }, { status: 500 });

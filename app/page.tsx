@@ -985,7 +985,7 @@ export default function Page() {
 
   const saveGame = async (): Promise<boolean> => {
     const data: Game = {
-      id: `g-${Date.now()}`,
+      id: `g-${ulidLike()}`,
       createdAt: new Date().toISOString(),
       prestigeOrder: prestige,
       players,
