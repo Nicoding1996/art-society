@@ -759,8 +759,9 @@ function PlayerCard({
 
 function swap<T>(arr: T[], i: number, j: number): T[] {
   const copy = arr.slice();
-  const tmp = copy[i];
-  copy[i] = copy[j];
+  // Use non-null assertions to satisfy the TS compiler here — indices are controlled by callers.
+  const tmp = copy[i]!;
+  copy[i] = copy[j]!;
   copy[j] = tmp;
   return copy;
 }
