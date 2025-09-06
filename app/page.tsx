@@ -1812,7 +1812,16 @@ function Results({
   onSave: () => void;
   onNew: () => void;
 }) {
-  const winner = playersSorted[0];
+  if (!playersSorted || playersSorted.length === 0) {
+    return (
+      <section className="card" style={{ marginBottom: 80 }}>
+        <h1 className="h1">Game Results</h1>
+        <div className="caption">No results to display.</div>
+      </section>
+    );
+  }
+
+  const winner = playersSorted[0]!;
   const rest = playersSorted.slice(1);
 
   return (
