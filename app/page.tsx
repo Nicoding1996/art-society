@@ -228,6 +228,7 @@ function PlayerCard({
   x5Color,
   locked,
   announce,
+  order,
 }: {
   index: number;
   player: Player;
@@ -236,6 +237,7 @@ function PlayerCard({
   x5Color: Color;
   locked: boolean;
   announce: (msg: string) => void;
+  order: PrestigeOrderItem[];
 }) {
   const setPaint = (color: Color, n: number) => {
     const next = { ...player, paintings: { ...player.paintings, [color]: n } };
@@ -256,6 +258,15 @@ function PlayerCard({
     const { finalScore } = computeScore(player, multipliers, x5Color);
     return finalScore;
   }, [player, multipliers, x5Color]);
+
+  // Press-and-hold "peek" for total score
+  const [peek, setPeek] = useState(false);
+
+  // Painting rows ordered by Prestige Track: ×2 (top) -> ×5 (bottom)
+  const orderedColors: Color[] = useMemo(
+    () => [...order].sort((a, b) => a.multiplier - b.multiplier).map((o) => o.color),
+    [order]
+  );
 
   return (
     <section className="card" aria-labelledby={`player-${player.id}-title`}>
@@ -300,7 +311,7 @@ function PlayerCard({
 
       <div className="section-title">Painting Tiles</div>
 
-      {COLORS.map((c) => {
+      {orderedColors.map((c) => {
         const mul = multipliers[c];
         return (
           <div key={c} className="row" style={{ justifyContent: "space-between" }}>
@@ -409,13 +420,38 @@ function PlayerCard({
 
       <div className="divider" />
 
-      <div
-        aria-live="polite"
-        className="row"
-        style={{ justifyContent: "space-between" }}
-      >
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <strong>Player Total</strong>
-        <strong>{total}</strong>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <strong aria-live="off">{peek ? total : "***"}</strong>
+          <button
+            className="btn btn-outline"
+            style={{ height: 32, paddingInline: 8 }}
+            aria-label="Press and hold to peek total score"
+            onMouseDown={() => setPeek(true)}
+            onMouseUp={() => setPeek(false)}
+            onMouseLeave={() => setPeek(false)}
+            onTouchStart={() => setPeek(true)}
+            onTouchEnd={() => setPeek(false)}
+            onKeyDown={(e) => {
+              if (e.key === " " || e.key === "Enter") {
+                e.preventDefault();
+                setPeek(true);
+              }
+            }}
+            onKeyUp={() => setPeek(false)}
+          >
+            {peek ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10z"/>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M3.27 2 2 3.27 5.11 6.4A12.35 12.35 0 0 0 2 12s3 7 10 7a10.53 10.53 0 0 0 4.6-1.02l2.13 2.13L20 19.73 3.27 2zM12 17c-5.52 0-8.46-4.27-9.44-5 .35-.26 1.39-1.02 2.86-1.74l2.02 2.02A5 5 0 0 0 12 17zm0-10c5.52 0 8.46 4.27 9.44 5-.28.21-.99.72-1.98 1.28l-1.53-1.53A5 5 0 0 0 12 7z"/>
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -872,6 +908,7 @@ export default function Page() {
               x5Color={x5Color}
               locked={locked}
               announce={(msg) => setAnnounceMsg(msg)}
+              order={prestige}
             />
           ))}
 
