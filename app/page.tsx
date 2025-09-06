@@ -1036,7 +1036,7 @@ export default function Page() {
               if (d2 !== 0) return d2;
               return a.name.localeCompare(b.name);
             });
-            winnerId = sorted[0].playerId;
+            winnerId = sorted[0]?.playerId;
           }
 
           setLibrary((lib) => {
@@ -1109,7 +1109,7 @@ export default function Page() {
               if (d2 !== 0) return d2;
               return a.name.localeCompare(b.name);
             });
-            winnerId = sorted[0].playerId;
+            winnerId = sorted[0]?.playerId;
           }
 
           setLibrary((lib) => {
