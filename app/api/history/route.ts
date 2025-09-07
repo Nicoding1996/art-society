@@ -80,17 +80,29 @@ export async function GET() {
         lastPlayedAtById.set(pl.playerId, g.createdAt || lastPlayedAtById.get(pl.playerId) || null);
       }
       // Compute winner for this game (by score desc, decor desc, name asc)
-      const ranked = participants
+      // Determine winner with manual tie-breaker consideration:
+      // - Highest finalScore
+      // - If multiple tied at top, prefer tieBreakerWinner === true
+      // - Otherwise fall back to decorCount desc, then name asc
+      const scored = participants
         .slice()
-        .filter((pl) => typeof pl.finalScore === "number")
-        .sort((a, b) => {
-          const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-          if (d !== 0) return d;
-          const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
-          if (d2 !== 0) return d2;
-          return (a.name || "").localeCompare(b.name || "");
-        });
-      const wId = ranked[0]?.playerId;
+        .filter((pl) => typeof pl.finalScore === "number");
+      let wId: string | undefined;
+      if (scored.length > 0) {
+        const maxScore = Math.max(...scored.map((pl) => pl.finalScore ?? 0));
+        const top = scored.filter((pl) => (pl.finalScore ?? 0) === maxScore);
+        const manual = top.find((pl: any) => (pl as any).tieBreakerWinner === true && !!pl.playerId);
+        if (manual) {
+          wId = manual.playerId;
+        } else {
+          const sortedTop = top.slice().sort((a, b) => {
+            const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
+            if (d2 !== 0) return d2;
+            return (a.name || "").localeCompare(b.name || "");
+          });
+          wId = sortedTop[0]?.playerId;
+        }
+      }
       if (wId) winsFromHistory.set(wId, (winsFromHistory.get(wId) ?? 0) + 1);
     }
 

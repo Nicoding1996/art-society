@@ -49,6 +49,10 @@ type Player = {
   };
   finalScore?: number;
   breakdown?: Breakdown;
+  // Manual tie-breaker metadata (optional)
+  tieBreakerWinner?: boolean;
+  tieBreaker?: "remainingPaddlePoints";
+  tieBreakerResolution?: "manual";
 };
 
 type Game = {
@@ -802,6 +806,10 @@ export default function Page() {
   const [players, setPlayers] = useState<Player[]>([defaultPlayer(1), defaultPlayer(2)]);
   const [resultsMode, setResultsMode] = useState(false);
   const [announceMsg, setAnnounceMsg] = useState<string>("");
+  // Manual tie-breaker UI state (first-place ties)
+  const [showTieModal, setShowTieModal] = useState<boolean>(false);
+  const [tieCandidateIdxs, setTieCandidateIdxs] = useState<number[] | null>(null);
+  const [selectedTieIdx, setSelectedTieIdx] = useState<number | null>(null);
 
   // Identity library + lineups
   const [library, setLibrary] = useState<PlayerIdentity[]>([]);
@@ -967,7 +975,9 @@ export default function Page() {
     // compute scores and switch to results
     const withScores = players.map((p) => {
       const { finalScore, breakdown } = computeScore(p, multipliers, x5Color);
-      return { ...p, finalScore, breakdown };
+      // Clear any previous tie-breaker flags during a fresh calculation
+      const { tieBreakerWinner, tieBreaker, tieBreakerResolution, ...rest } = (p as any);
+      return { ...(rest as Player), finalScore, breakdown };
     });
 
     // Sort: finalScore desc, tiebreak decorCount desc, then name asc
@@ -981,6 +991,52 @@ export default function Page() {
 
     setPlayers(withScores);
     setResultsMode(true);
+
+    // Detect first-place tie (manual resolution only — organizer picks who had more remaining Paddle Points)
+    const top = withScores[0]?.finalScore ?? null;
+    if (top != null) {
+      const idxs = withScores
+        .map((p, i) => ({ i, s: p.finalScore ?? 0 }))
+        .filter((x) => x.s === top)
+        .map((x) => x.i);
+      if (idxs.length > 1) {
+        setTieCandidateIdxs(idxs);
+        setSelectedTieIdx(null);
+        setShowTieModal(true);
+      }
+    }
+  };
+
+  // Manual tie-breaker handlers
+  const handleConfirmTie = () => {
+    if (selectedTieIdx == null) return;
+    const chosenIdx = selectedTieIdx;
+    const chosenName = players[chosenIdx!]?.name ?? "Winner";
+
+    setPlayers((ps) => {
+      if (!ps[chosenIdx!]) return ps;
+      const updated = ps.map((p, i) => ({
+        ...p,
+        tieBreakerWinner: i === chosenIdx ? true : undefined,
+        tieBreaker: i === chosenIdx ? "remainingPaddlePoints" : p.tieBreaker,
+        tieBreakerResolution: i === chosenIdx ? "manual" : p.tieBreakerResolution,
+      }));
+      const arr = updated.slice();
+      const [chosen] = arr.splice(chosenIdx, 1);
+      if (chosen) arr.unshift(chosen);
+      return arr as Player[];
+    });
+
+    setShowTieModal(false);
+    setTieCandidateIdxs(null);
+    setSelectedTieIdx(null);
+    setAnnounceMsg(`${chosenName} declared winner (tie-breaker: Remaining Paddle Points, manual).`);
+  };
+
+  const handleCancelTie = () => {
+    setShowTieModal(false);
+    setTieCandidateIdxs(null);
+    setSelectedTieIdx(null);
   };
 
   const saveGame = async (): Promise<boolean> => {
@@ -1020,14 +1076,24 @@ export default function Page() {
           const now = new Date().toISOString();
           let winnerId: string | undefined;
           if (players.every((p) => typeof p.finalScore === "number" && p.playerId)) {
-            const sorted = players.slice().sort((a, b) => {
-              const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-              if (d !== 0) return d;
-              const d2 = b.decorCount - a.decorCount;
-              if (d2 !== 0) return d2;
-              return a.name.localeCompare(b.name);
-            });
-            winnerId = sorted[0]?.playerId;
+            const scored = players
+              .slice()
+              .filter((p) => typeof p.finalScore === "number" && !!p.playerId) as any[];
+            const maxScore = Math.max(...scored.map((p) => p.finalScore ?? 0));
+            const top = scored.filter((p) => (p.finalScore ?? 0) === maxScore);
+            const manual = top.find((p) => (p as any).tieBreakerWinner === true);
+            if (manual) {
+              winnerId = manual.playerId;
+            } else {
+              const sorted = scored.slice().sort((a, b) => {
+                const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+                if (d !== 0) return d;
+                const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
+                if (d2 !== 0) return d2;
+                return (a.name || "").localeCompare(b.name || "");
+              });
+              winnerId = sorted[0]?.playerId;
+            }
           }
 
           setLibrary((lib) => {
@@ -1255,6 +1321,60 @@ export default function Page() {
           onNew={startNew}
         />
       )}
+
+      {/* First-place tie modal (manual selection) */}
+      {showTieModal ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="card"
+          style={{
+            position: "fixed",
+            inset: 16,
+            zIndex: 70,
+            background: "var(--cream)",
+            maxWidth: 560,
+            margin: "0 auto",
+          }}
+        >
+          <div className="card-header" style={{ alignItems: "center", justifyContent: "space-between" }}>
+            <h2 className="h2" style={{ margin: 0 }}>First-place tie</h2>
+            <button className="btn btn-outline" style={{ height: 32 }} onClick={handleCancelTie} aria-label="Close tie-breaker">
+              Close
+            </button>
+          </div>
+          <div className="stack" style={{ gap: 10, padding: 12 }}>
+            <div className="section-title">Who had more remaining Paddle Points?</div>
+            <div className="stack" style={{ gap: 6 }}>
+              {(tieCandidateIdxs ?? []).map((idx) => (
+                <button
+                  key={(players[idx]?.id ?? String(idx))}
+                  className={`btn ${selectedTieIdx === idx ? "btn-primary" : "btn-outline"}`}
+                  style={{ justifyContent: "space-between" }}
+                  onClick={() => setSelectedTieIdx(idx)}
+                  aria-pressed={selectedTieIdx === idx}
+                  aria-label={`Select ${players[idx]?.name ?? "player"}`}
+                >
+                  <span>{players[idx]?.name ?? `Player ${idx + 1}`}</span>
+                </button>
+              ))}
+            </div>
+            <div className="row" style={{ gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+              <button className="btn btn-outline" onClick={handleCancelTie}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleConfirmTie}
+                disabled={selectedTieIdx == null}
+                aria-disabled={selectedTieIdx == null}
+              >
+                Declare winner
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Visible toast */}
       {announceMsg ? (

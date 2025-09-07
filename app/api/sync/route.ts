@@ -166,17 +166,28 @@ export async function POST(req: Request) {
     // Determine winner: finalScore desc, tiebreak decor desc, then name asc
     let winnerId: string | undefined;
     try {
-      const sorted = resolvedPlayers
+      const scored = resolvedPlayers
         .slice()
-        .filter((p) => typeof p.finalScore === "number" && !!p.playerId)
-        .sort((a, b) => {
-          const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-          if (d !== 0) return d;
-          const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
-          if (d2 !== 0) return d2;
-          return (a.name || "").localeCompare(b.name || "");
-        });
-      winnerId = sorted[0]?.playerId;
+        .filter((p) => typeof p.finalScore === "number" && !!p.playerId);
+
+      if (scored.length > 0) {
+        const maxScore = Math.max(...scored.map((p) => p.finalScore ?? 0));
+        const top = scored.filter((p) => (p.finalScore ?? 0) === maxScore);
+
+        // Manual tie-breaker override: if any top scorer has tieBreakerWinner flag, choose them
+        const manual = top.find((p: any) => (p as any).tieBreakerWinner === true && !!p.playerId);
+        if (manual) {
+          winnerId = (manual as any).playerId as string;
+        } else {
+          // Fall back to decor desc, then name asc among tied top scorers
+          const sortedTop = top.slice().sort((a, b) => {
+            const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
+            if (d2 !== 0) return d2;
+            return (a.name || "").localeCompare(b.name || "");
+          });
+          winnerId = sortedTop[0]?.playerId;
+        }
+      }
     } catch {
       // ignore
     }
