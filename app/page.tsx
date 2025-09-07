@@ -1011,15 +1011,7 @@ export default function Page() {
         console.warn("Cloud returned non-ok:", payload);
       }
 
-      // Mirror authoritative save locally so Archives still reads quickly and offline.
-      try {
-        const hxRaw = localStorage.getItem(LIB_KEYS.history);
-        const existing = hxRaw ? (JSON.parse(hxRaw) as Game[]) : [];
-        existing.unshift(data);
-        localStorage.setItem(LIB_KEYS.history, JSON.stringify(existing));
-      } catch {
-        // Ignore local mirror errors
-      }
+      // Cloud is the single source of truth. Do not mirror to local history.
 
       // Update local library/lineups so UI reflects server state immediately
       try {
@@ -1088,80 +1080,9 @@ export default function Page() {
       setAnnounceMsg("Saved to Cloud");
       return true;
     } catch (cloudErr) {
-      console.warn("Cloud save failed, falling back to local save", cloudErr);
-
-      // Fallback local persistence (preserve previous behavior)
-      try {
-        const hxRaw = localStorage.getItem(LIB_KEYS.history);
-        const existing = hxRaw ? (JSON.parse(hxRaw) as Game[]) : [];
-        existing.unshift(data);
-        localStorage.setItem(LIB_KEYS.history, JSON.stringify(existing));
-
-        const idsUsed = players.map((p) => p.playerId).filter(Boolean) as string[];
-        if (idsUsed.length > 0) {
-          const now = new Date().toISOString();
-          let winnerId: string | undefined;
-          if (players.every((p) => typeof p.finalScore === "number" && p.playerId)) {
-            const sorted = players.slice().sort((a, b) => {
-              const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-              if (d !== 0) return d;
-              const d2 = b.decorCount - a.decorCount;
-              if (d2 !== 0) return d2;
-              return a.name.localeCompare(b.name);
-            });
-            winnerId = sorted[0]?.playerId;
-          }
-
-          setLibrary((lib) => {
-            const setIds = new Set(idsUsed);
-            const updated = lib.map((pl) =>
-              setIds.has(pl.id)
-                ? {
-                    ...pl,
-                    lastPlayedAt: now,
-                    gamesPlayed: (pl.gamesPlayed ?? 0) + 1,
-                    wins: pl.id === winnerId ? (pl.wins ?? 0) + 1 : pl.wins ?? 0,
-                  }
-                : pl
-            );
-            try { saveLibrary(updated); } catch {}
-            return updated;
-          });
-
-          if (idsUsed.length === players.length) {
-            setLineups((ls) => {
-              const size = players.length;
-              const signature = idsUsed.join("|");
-              let found = ls.find((l) => l.size === size && l.playerIds.join("|") === signature);
-              const nowIso = new Date().toISOString();
-              if (found) {
-                found.uses += 1;
-                found.lastUsedAt = nowIso;
-                const next = ls.slice();
-                try { saveLineups(next); } catch {}
-                return next;
-              } else {
-                const newEntry: Lineup = {
-                  id: ulidLike(),
-                  size,
-                  playerIds: idsUsed,
-                  lastUsedAt: nowIso,
-                  uses: 1,
-                };
-                const next = [newEntry, ...ls];
-                try { saveLineups(next); } catch {}
-                return next;
-              }
-            });
-          }
-        }
-
-        setAnnounceMsg("Saved locally (cloud unavailable)");
-        return true;
-      } catch {
-        setAnnounceMsg("Save failed. Check connection and try again.");
-        return false;
-      }
+      console.warn("Cloud save failed — no local backup by design:", cloudErr);
+      setAnnounceMsg("Cloud save failed. Check connection and try again.");
+      return false;
     }
   };
 
@@ -1392,51 +1313,33 @@ function ArchivesModal({
     Array<{ id: string; name: string; wins: number; games: number; avg: number; high: number }>
   >([]);
 
-  // Track data source to surface when UI is showing cloud vs local cache
-  const [source, setSource] = useState<"cloud" | "local">("cloud");
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
-
+  const [dbHost, setDbHost] = useState<string>("");
+ 
   const loadArchives = async () => {
     setLoading(true);
     setErrorMsg("");
-    let cancelled = false;
     try {
-      // Bust any intermediary cache defensively with a timestamp, even though the route is force-dynamic
       const res = await fetch(`/api/history?ts=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`history ${res.status}`);
       const data = await res.json();
-      if (!cancelled) {
-        setHistory((data.history ?? []) as Game[]);
-        setLeaderboard((data.leaderboard ?? []) as any);
-        setSource("cloud");
+      setHistory((data.history ?? []) as Game[]);
+      setLeaderboard((data.leaderboard ?? []) as any);
+      try {
+        const url: string = data?.env?.url || "";
+        setDbHost(url ? new URL(url).host : "");
+      } catch {
+        setDbHost("");
       }
     } catch (err) {
-      console.warn("[Archives] Falling back to local cache:", err);
-      // Fallback to localStorage + local library snapshot
-      try {
-        const raw = localStorage.getItem(LIB_KEYS.history);
-        setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
-      } catch {
-        setHistory([]);
-      }
-      const rows = [...library].map((p) => ({
-        id: p.id,
-        name: p.displayName,
-        wins: p.wins ?? 0,
-        games: p.gamesPlayed ?? 0,
-        avg: 0,
-        high: 0,
-      }));
-      setLeaderboard(rows);
-      setSource("local");
-      setErrorMsg("Showing local cache");
+      console.warn("[Archives] Cloud fetch failed:", err);
+      setHistory([]);
+      setLeaderboard([]);
+      setErrorMsg("Failed to load from cloud");
     } finally {
       setLoading(false);
     }
-    return () => {
-      cancelled = true;
-    };
   };
 
   useEffect(() => {
@@ -1451,13 +1354,17 @@ function ArchivesModal({
   }, [library]);
 
   const refresh = () => loadArchives();
-  const clearLocalArchives = () => {
+  const flushCloud = async () => {
+    if (!window.confirm("Delete ALL cloud history and lineups? This cannot be undone.")) return;
+    setLoading(true);
     try {
-      localStorage.removeItem(LIB_KEYS.history);
-    } catch {}
-    if (source === "local") {
-      setHistory([]);
-      setLeaderboard([] as any);
+      const res = await fetch("/api/history?keepPlayers=true", { method: "DELETE" });
+      if (!res.ok) throw new Error("delete failed");
+      await loadArchives();
+    } catch {
+      setErrorMsg("Failed to flush cloud");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1520,11 +1427,9 @@ function ArchivesModal({
             </button>
           </div>
 
-          {/* Data source + controls */}
+          {/* Controls */}
           <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <span className="caption" aria-live="polite">
-              Source: {source === "cloud" ? "Cloud" : "Local cache"}{loading ? " (loading…)" : ""}
-            </span>
+            <span className="caption" aria-live="polite">DB: {dbHost || "unknown"}</span>
             {errorMsg ? <span className="caption" style={{ color: "var(--warning)" }}>{errorMsg}</span> : null}
             <button
               className="btn btn-outline"
@@ -1538,10 +1443,11 @@ function ArchivesModal({
             <button
               className="btn btn-outline"
               style={{ height: 28, paddingInline: 8 }}
-              onClick={clearLocalArchives}
-              aria-label="Clear local archives cache"
+              onClick={flushCloud}
+              aria-busy={loading}
+              aria-label="Delete all cloud history and lineups"
             >
-              Clear Local
+              Flush Cloud
             </button>
           </div>
         </div>

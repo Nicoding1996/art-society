@@ -123,8 +123,44 @@ export async function GET() {
       return a.name.localeCompare(b.name);
     });
 
-    return NextResponse.json({ ok: true, history, leaderboard: filtered });
+    return NextResponse.json({ ok: true, history, leaderboard: filtered, env: envDiagnostics() });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message || String(err), env: envDiagnostics() }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const admin = getSupabaseAdmin();
+    const url = new URL(req.url);
+    const keepPlayers = url.searchParams.get("keepPlayers") === "true";
+
+    // Delete all games
+    {
+      const { error } = await admin.from("games").delete().neq("id", "");
+      if (error) {
+        return NextResponse.json({ ok: false, step: "delete_games", error: error.message }, { status: 500 });
+      }
+    }
+
+    // Delete all lineups
+    {
+      const { error } = await admin.from("lineups").delete().neq("id", "");
+      if (error) {
+        return NextResponse.json({ ok: false, step: "delete_lineups", error: error.message }, { status: 500 });
+      }
+    }
+
+    // Optionally delete all players as well
+    if (!keepPlayers) {
+      const { error } = await admin.from("players").delete().neq("id", "");
+      if (error) {
+        return NextResponse.json({ ok: false, step: "delete_players", error: error.message }, { status: 500 });
+      }
+    }
+
+    return NextResponse.json({ ok: true, keepPlayers });
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
