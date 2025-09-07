@@ -1391,41 +1391,75 @@ function ArchivesModal({
   const [leaderboard, setLeaderboard] = useState<
     Array<{ id: string; name: string; wins: number; games: number; avg: number; high: number }>
   >([]);
- 
-  useEffect(() => {
+
+  // Track data source to surface when UI is showing cloud vs local cache
+  const [source, setSource] = useState<"cloud" | "local">("cloud");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string>("");
+
+  const loadArchives = async () => {
+    setLoading(true);
+    setErrorMsg("");
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/history", { cache: "no-store" });
-        if (!res.ok) throw new Error("fetch failed");
-        const data = await res.json();
-        if (!cancelled) {
-          setHistory((data.history ?? []) as Game[]);
-          setLeaderboard((data.leaderboard ?? []) as any);
-        }
-      } catch {
-        // Fallback to localStorage + local library snapshot
-        try {
-          const raw = localStorage.getItem(LIB_KEYS.history);
-          setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
-        } catch {
-          setHistory([]);
-        }
-        const rows = [...library].map((p) => ({
-          id: p.id,
-          name: p.displayName,
-          wins: p.wins ?? 0,
-          games: p.gamesPlayed ?? 0,
-          avg: 0,
-          high: 0,
-        }));
-        setLeaderboard(rows);
+    try {
+      // Bust any intermediary cache defensively with a timestamp, even though the route is force-dynamic
+      const res = await fetch(`/api/history?ts=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`history ${res.status}`);
+      const data = await res.json();
+      if (!cancelled) {
+        setHistory((data.history ?? []) as Game[]);
+        setLeaderboard((data.leaderboard ?? []) as any);
+        setSource("cloud");
       }
-    })();
+    } catch (err) {
+      console.warn("[Archives] Falling back to local cache:", err);
+      // Fallback to localStorage + local library snapshot
+      try {
+        const raw = localStorage.getItem(LIB_KEYS.history);
+        setHistory(raw ? (JSON.parse(raw) as Game[]) : []);
+      } catch {
+        setHistory([]);
+      }
+      const rows = [...library].map((p) => ({
+        id: p.id,
+        name: p.displayName,
+        wins: p.wins ?? 0,
+        games: p.gamesPlayed ?? 0,
+        avg: 0,
+        high: 0,
+      }));
+      setLeaderboard(rows);
+      setSource("local");
+      setErrorMsg("Showing local cache");
+    } finally {
+      setLoading(false);
+    }
     return () => {
       cancelled = true;
     };
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    (async () => {
+      if (disposed) return;
+      await loadArchives();
+    })();
+    return () => {
+      disposed = true;
+    };
   }, [library]);
+
+  const refresh = () => loadArchives();
+  const clearLocalArchives = () => {
+    try {
+      localStorage.removeItem(LIB_KEYS.history);
+    } catch {}
+    if (source === "local") {
+      setHistory([]);
+      setLeaderboard([] as any);
+    }
+  };
 
   // Leaderboard is provided by the server (/api/history) and stored in `leaderboard` state.
 
@@ -1483,6 +1517,31 @@ function ArchivesModal({
               onClick={() => setTab("leaderboard")}
             >
               Player Leaderboard
+            </button>
+          </div>
+
+          {/* Data source + controls */}
+          <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span className="caption" aria-live="polite">
+              Source: {source === "cloud" ? "Cloud" : "Local cache"}{loading ? " (loading…)" : ""}
+            </span>
+            {errorMsg ? <span className="caption" style={{ color: "var(--warning)" }}>{errorMsg}</span> : null}
+            <button
+              className="btn btn-outline"
+              style={{ height: 28, paddingInline: 8 }}
+              onClick={refresh}
+              aria-busy={loading}
+              aria-label="Refresh from cloud"
+            >
+              Refresh
+            </button>
+            <button
+              className="btn btn-outline"
+              style={{ height: 28, paddingInline: 8 }}
+              onClick={clearLocalArchives}
+              aria-label="Clear local archives cache"
+            >
+              Clear Local
             </button>
           </div>
         </div>

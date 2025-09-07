@@ -28,13 +28,19 @@ export async function GET() {
       return NextResponse.json({ ok: false, error: `Select games failed: ${gErr.message}`, env: envDiagnostics() }, { status: 500 });
     }
 
-    // Load players for leaderboard base
-    const { data: players, error: pErr } = await admin
-      .from("players")
-      .select("id, display_name, games_played, wins, last_played_at");
-
-    if (pErr) {
-      return NextResponse.json({ ok: false, error: `Select players failed: ${pErr.message}`, env: envDiagnostics() }, { status: 500 });
+    // Load players for leaderboard base (non-fatal — continue if schema differs)
+    let players: any[] = [];
+    {
+      const { data: pData, error: pErr } = await admin
+        .from("players")
+        .select("id, display_name, games_played, wins, last_played_at");
+      if (!pErr) {
+        players = pData ?? [];
+      } else {
+        // Gracefully continue when optional columns are missing to avoid client fallback to local cache
+        console.warn("[/api/history] players select failed, continuing with history-only leaderboard:", pErr.message);
+        players = [];
+      }
     }
 
     // Normalize history shape for client (createdAt, prestigeOrder, players, version)
