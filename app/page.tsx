@@ -798,7 +798,6 @@ function defaultPlayer(i: number): Player {
 
 export default function Page() {
   // Global UI options
-  const [leftHanded, setLeftHanded] = useState(false);
   const [palette, setPalette] = useState<"default" | "deuteranopia" | "protanopia" | "tritanopia">("default");
 
   // Game state
@@ -816,9 +815,6 @@ export default function Page() {
   const [lineups, setLineups] = useState<Lineup[]>([]);
   const [showArchives, setShowArchives] = useState(false);
 
-  useEffect(() => {
-    document.documentElement.setAttribute("data-left-handed", String(leftHanded));
-  }, [leftHanded]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-palette", palette);
@@ -1167,21 +1163,8 @@ export default function Page() {
         <h1 className="h1" style={{ textAlign: "center" }}>
           Art Society Scorer
         </h1>
-        <div className="row" style={{ justifyContent: "center", gap: 8 }}>
-          <label className="toggle" htmlFor="left-handed" style={{ gap: 8 }}>
-            <input
-              id="left-handed"
-              type="checkbox"
-              checked={leftHanded}
-              onChange={(e) => setLeftHanded(e.target.checked)}
-              aria-label="Left-handed mode"
-            />
-            <span className="track">
-              <span className="thumb" />
-            </span>
-            <span>Left-handed</span>
-          </label>
-          <div className="row" style={{ gap: 8 }}>
+        <div className="row" style={{ justifyContent: "center", gap: 12, alignItems: "center" }}>
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
             <label className="caption" htmlFor="palette">
               Palette
             </label>
