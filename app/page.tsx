@@ -662,7 +662,7 @@ function PlayerCard({
           value={player.decorCount}
           setValue={(n) => setPlayer({ ...player, decorCount: n })}
           min={0}
-          max={20}
+          max={50}
           ariaLabel="Decor tiles"
           id={`p-${player.id}-decor`}
         />
