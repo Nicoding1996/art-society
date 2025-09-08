@@ -1748,6 +1748,38 @@ function PrestigeTrack({
     setOrder(next);
   };
 
+  // Drag and drop state/handlers for smooth reordering
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+
+  const handleDragStart = (idx: number) => (e: React.DragEvent<HTMLDivElement>) => {
+    if (locked) { e.preventDefault(); return; }
+    setDragIdx(idx);
+    try {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(idx));
+    } catch {}
+  };
+
+  const handleDragEnter = (overIdx: number) => (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (locked || dragIdx == null || overIdx === dragIdx) return;
+
+    // Reorder using the latest prop `order`
+    const colors: Color[] = order.map((o) => o.color);
+    const moved = colors.splice(dragIdx, 1)[0] as Color;
+    colors.splice(overIdx, 0, moved);
+
+    const next: PrestigeOrderItem[] = colors.map((c: Color, i: number) => ({
+      color: c,
+      multiplier: (5 - i) as Multiplier,
+    }));
+
+    setOrder(next);
+    setDragIdx(overIdx);
+  };
+
+  const handleDragEnd = () => setDragIdx(null);
+
   return (
     <section className="card" aria-labelledby="prestige-title">
       <div className="card-header">
@@ -1758,11 +1790,30 @@ function PrestigeTrack({
           <span className="caption" aria-live="polite">
             Locked after scoring begins
           </span>
-        ) : null}
+        ) : (
+          <span className="caption" aria-live="polite">Drag to reorder</span>
+        )}
       </div>
       <div className="prestige">
         {order.map((item, idx) => (
-          <div className="chip" key={item.color}>
+          <div
+            className="chip"
+            key={item.color}
+            draggable={!locked}
+            onDragStart={handleDragStart(idx)}
+            onDragEnter={handleDragEnter(idx)}
+            onDragOver={(e) => e.preventDefault()}
+            onDragEnd={handleDragEnd}
+            aria-grabbed={dragIdx === idx}
+            role="option"
+            title={!locked ? "Drag to reorder" : undefined}
+            style={{
+              cursor: locked ? "default" : "grab",
+              opacity: dragIdx === idx ? 0.7 : 1,
+              transition: "transform 120ms ease",
+              transform: dragIdx === idx ? "scale(0.96)" : "none",
+            }}
+          >
             <div
               className={`circle ${item.color}`}
               aria-label={`${colorLabel(item.color)}`}
