@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../../lib/supabase-server";
 
-// Mirror of client canonicalization to enforce server-side consistency
+ // Mirror of client canonicalization to enforce server-side consistency
 function canonicalizeName(raw: string): string {
   const trimmed = (raw || "").trim();
   if (!trimmed) return "";
@@ -10,6 +10,11 @@ function canonicalizeName(raw: string): string {
   const stripped = nfkd.replace(/[\u0300-\u036f]/g, "");
   const cleaned = stripped.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
   return cleaned.toLowerCase();
+}
+
+// Compact ULID-like generator for ids
+function ulidLike(): string {
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10).toUpperCase();
 }
 
 type PlayerIdentity = {
@@ -54,6 +59,37 @@ export async function POST(req: Request) {
     const players = payload.players ?? [];
     const history = payload.history ?? [];
     const lineups = payload.lineups ?? [];
+
+    // Upsert users (unified identities) deduplicated by canonical
+    if (players.length > 0) {
+      const byCanonical = new Map<string, any>();
+      for (const p of players) {
+        const c = canonicalizeName(p.displayName || p.canonical || "");
+        if (!c) continue;
+        if (!byCanonical.has(c)) {
+          byCanonical.set(c, {
+            id: p.id || ("pid-" + ulidLike()),
+            canonical: c,
+            display_name: p.displayName || p.canonical || c,
+            avatar_key: p.avatarKey ?? null,
+            color_hint: p.colorHint ?? null,
+            created_at: p.createdAt ?? null,
+          });
+        }
+      }
+
+      if (byCanonical.size > 0) {
+        const { error: uErr } = await admin
+          .from("users")
+          .upsert(Array.from(byCanonical.values()), { onConflict: "canonical" });
+        if (uErr) {
+          return NextResponse.json(
+            { ok: false, step: "users", error: uErr.message },
+            { status: 500 }
+          );
+        }
+      }
+    }
 
     // Upsert players
     if (players.length > 0) {

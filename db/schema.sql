@@ -1,6 +1,19 @@
 -- Art Society Scorer — Supabase schema
 -- Run this in Supabase SQL editor before deploying to Vercel
 
+-- users (unified identities with unique canonical)
+create table if not exists users (
+  id text primary key,
+  canonical text not null unique,
+  display_name text not null,
+  avatar_key text,
+  color_hint text,
+  created_at timestamptz default now()
+);
+
+-- Enforce one user per canonical globally
+create unique index if not exists users_canonical_key on users (canonical);
+
 -- players (identities)
 create table if not exists players (
   id text primary key,

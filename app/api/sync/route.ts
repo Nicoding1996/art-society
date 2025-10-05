@@ -45,15 +45,15 @@ async function resolvePlayerIdentities(
 
   const uniqueCanonicals = Array.from(new Set(need.map((n) => n.canonical)));
 
-  // Fetch existing players by canonical
-  const { data: existing, error: selErr } = await admin
-    .from("players")
-    .select("id, canonical, display_name")
-    .in("canonical", uniqueCanonicals);
-
-  if (selErr) {
-    throw new Error(`Lookup players by canonical failed: ${selErr.message}`);
-  }
+    // Fetch existing unified users by canonical
+    const { data: existing, error: selErr } = await admin
+      .from("users")
+      .select("id, canonical, display_name")
+      .in("canonical", uniqueCanonicals);
+  
+    if (selErr) {
+      throw new Error(`Lookup users by canonical failed: ${selErr.message}`);
+    }
 
   const canonMap = new Map<string, { id: string; display_name: string }>();
   (existing ?? []).forEach((row: any) => {
@@ -72,27 +72,25 @@ async function resolvePlayerIdentities(
         id: "pid-" + ulidLike(),
         canonical: c,
         display_name: display,
-        created_at: now,
-        games_played: 0,
-        wins: 0,
+        created_at: now
       };
     });
 
     // Try bulk insert; on conflict/race, re-select
     const { data: inserted, error: insErr } = await admin
-      .from("players")
+      .from("users")
       .insert(createRows)
       .select("id, canonical, display_name");
 
     if (insErr) {
       const { data: retry, error: retryErr } = await admin
-        .from("players")
+        .from("users")
         .select("id, canonical, display_name")
         .in("canonical", toCreateCanonicals);
 
       if (retryErr) {
         throw new Error(
-          `Insert players failed: ${insErr.message}; Retry lookup failed: ${retryErr.message}`
+          `Insert users failed: ${insErr.message}; Retry lookup failed: ${retryErr.message}`
         );
       }
       (retry ?? []).forEach((row: any) => {

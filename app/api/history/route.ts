@@ -12,6 +12,16 @@ function envDiagnostics() {
   };
 }
 
+function canonicalizeName(raw: string): string {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return "";
+  const collapsed = trimmed.replace(/\s+/g, " ");
+  const nfkd = collapsed.normalize("NFKD");
+  const stripped = nfkd.replace(/[\u0300-\u036f]/g, "");
+  const cleaned = stripped.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  return cleaned.toLowerCase();
+}
+
 type Color = "red" | "blue" | "yellow" | "green";
 
 export async function GET() {
@@ -33,9 +43,40 @@ export async function GET() {
     {
       const { data: pData, error: pErr } = await admin
         .from("players")
-        .select("id, display_name, games_played, wins, last_played_at");
+        .select("id, canonical, display_name, games_played, wins, last_played_at");
       if (!pErr) {
-        players = pData ?? [];
+        // Aggregate multiple rows that share the same canonical into a single stats record
+        const rows = (pData ?? []) as any[];
+        const byCanonical = new Map<
+          string,
+          { id: string; canonical: string; display_name: string; games_played: number; wins: number; last_played_at: string | null }
+        >();
+
+        for (const r of rows) {
+          const c = r?.canonical;
+          if (!c) continue;
+          const existing = byCanonical.get(c) ?? {
+            id: r.id,
+            canonical: c,
+            display_name: r.display_name,
+            games_played: 0,
+            wins: 0,
+            last_played_at: r.last_played_at ?? null,
+          };
+          existing.games_played = (existing.games_played ?? 0) + (r.games_played ?? 0);
+          existing.wins = (existing.wins ?? 0) + (r.wins ?? 0);
+
+          const exTs = existing.last_played_at ? Date.parse(existing.last_played_at) : 0;
+          const rTs = r.last_played_at ? Date.parse(r.last_played_at) : 0;
+          if (rTs >= exTs) {
+            existing.last_played_at = r.last_played_at ?? existing.last_played_at;
+            existing.display_name = r.display_name ?? existing.display_name;
+            existing.id = r.id ?? existing.id; // keep some id for table row keys
+          }
+          byCanonical.set(c, existing);
+        }
+
+        players = Array.from(byCanonical.values());
       } else {
         // Gracefully continue when optional columns are missing to avoid client fallback to local cache
         console.warn("[/api/history] players select failed, continuing with history-only leaderboard:", pErr.message);
@@ -56,71 +97,75 @@ export async function GET() {
     const sums = new Map<string, { total: number; count: number; high: number }>();
     for (const g of history) {
       for (const pl of g.players as any[]) {
-        if (!pl?.playerId || typeof pl?.finalScore !== "number") continue;
-        const rec = sums.get(pl.playerId) ?? { total: 0, count: 0, high: 0 };
+        const c = canonicalizeName(pl?.name || "");
+        if (!c || typeof pl?.finalScore !== "number") continue;
+        const rec = sums.get(c) ?? { total: 0, count: 0, high: 0 };
         rec.total += pl.finalScore ?? 0;
         rec.count += 1;
         rec.high = Math.max(rec.high, pl.finalScore ?? 0);
-        sums.set(pl.playerId, rec);
+        sums.set(c, rec);
       }
     }
 
     // Build leaderboard from union of players table and snapshot-derived sums.
     // Also derive wins and lastPlayedAt from history when players table rows are missing.
     const winsFromHistory = new Map<string, number>();
-    const lastNameById = new Map<string, string>();
-    const lastPlayedAtById = new Map<string, string>();
+    const lastNameByCanonical = new Map<string, string>();
+    const lastPlayedAtByCanonical = new Map<string, string>();
 
     // Derive winners and last-seen names/timestamps from history
     for (const g of history as any[]) {
-      const participants = (g.players as any[]).filter((pl) => !!pl?.playerId);
+      const participants = (g.players as any[])
+        .map((pl) => ({ ...pl, c: canonicalizeName(pl?.name || "") }))
+        .filter((pl) => !!pl.c);
+
       // Track last seen name and timestamp
       for (const pl of participants) {
-        lastNameById.set(pl.playerId, pl.name || lastNameById.get(pl.playerId) || "Unknown");
-        lastPlayedAtById.set(pl.playerId, g.createdAt || lastPlayedAtById.get(pl.playerId) || null);
+        lastNameByCanonical.set(pl.c, pl.name || lastNameByCanonical.get(pl.c) || "Unknown");
+        lastPlayedAtByCanonical.set(pl.c, g.createdAt || lastPlayedAtByCanonical.get(pl.c) || null);
       }
+
       // Compute winner for this game (by score desc, decor desc, name asc)
       // Determine winner with manual tie-breaker consideration:
       // - Highest finalScore
       // - If multiple tied at top, prefer tieBreakerWinner === true
       // - Otherwise fall back to decorCount desc, then name asc
-      const scored = participants
-        .slice()
-        .filter((pl) => typeof pl.finalScore === "number");
-      let wId: string | undefined;
+      const scored = participants.slice().filter((pl) => typeof pl.finalScore === "number");
+      let wC: string | undefined;
       if (scored.length > 0) {
         const maxScore = Math.max(...scored.map((pl) => pl.finalScore ?? 0));
         const top = scored.filter((pl) => (pl.finalScore ?? 0) === maxScore);
-        const manual = top.find((pl: any) => (pl as any).tieBreakerWinner === true && !!pl.playerId);
+        const manual = top.find((pl: any) => (pl as any).tieBreakerWinner === true);
         if (manual) {
-          wId = manual.playerId;
+          wC = manual.c;
         } else {
           const sortedTop = top.slice().sort((a, b) => {
             const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
             if (d2 !== 0) return d2;
             return (a.name || "").localeCompare(b.name || "");
           });
-          wId = sortedTop[0]?.playerId;
+          wC = sortedTop[0]?.c;
         }
       }
-      if (wId) winsFromHistory.set(wId, (winsFromHistory.get(wId) ?? 0) + 1);
+      if (wC) winsFromHistory.set(wC, (winsFromHistory.get(wC) ?? 0) + 1);
     }
 
-    const playersMap = new Map<string, any>((players ?? []).map((p: any) => [p.id, p]));
-    const allIds = new Set<string>([
+    const playersByCanonical = new Map<string, any>((players ?? []).map((p: any) => [p.canonical, p]));
+    const allCanonicals = new Set<string>([
       ...Array.from(sums.keys()),
-      ...(players ?? []).map((p: any) => p.id),
+      ...(players ?? []).map((p: any) => p.canonical),
     ]);
 
-    const leaderboard = Array.from(allIds).map((id) => {
-      const pRow = playersMap.get(id);
-      const rec = sums.get(id);
+    const leaderboard = Array.from(allCanonicals).map((canonical) => {
+      const pRow = playersByCanonical.get(canonical);
+      const rec = sums.get(canonical);
       const avg = rec && rec.count > 0 ? Math.round((rec.total / rec.count) * 10) / 10 : 0;
       const high = rec ? rec.high : 0;
-      const wins = pRow?.wins ?? winsFromHistory.get(id) ?? 0;
+      const wins = pRow?.wins ?? winsFromHistory.get(canonical) ?? 0;
       const games = pRow?.games_played ?? (rec?.count ?? 0);
-      const name = pRow?.display_name ?? lastNameById.get(id) ?? "Unknown";
-      const lastPlayedAt = pRow?.last_played_at ?? lastPlayedAtById.get(id) ?? null;
+      const name = pRow?.display_name ?? lastNameByCanonical.get(canonical) ?? "Unknown";
+      const lastPlayedAt = pRow?.last_played_at ?? lastPlayedAtByCanonical.get(canonical) ?? null;
+      const id = pRow?.id ?? `c:${canonical}`;
       return { id, name, wins, games, avg, high, lastPlayedAt };
     });
 
