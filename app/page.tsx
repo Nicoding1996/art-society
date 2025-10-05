@@ -152,6 +152,43 @@ function saveLineups(list: Lineup[]) {
   localStorage.setItem(LIB_KEYS.lineups, JSON.stringify(list));
 }
 
+type CloudIdentity = {
+  id: string;
+  canonical: string;
+  displayName: string;
+  avatarKey?: string | null;
+  colorHint?: string | null;
+  createdAt?: string | null;
+  lastPlayedAt?: string | null;
+  gamesPlayed?: number;
+  wins?: number;
+};
+
+function mergeCloudIdentities(local: PlayerIdentity[], cloud: CloudIdentity[]): PlayerIdentity[] {
+  const byC = new Map<string, PlayerIdentity>();
+  for (const p of local) byC.set(p.canonical, p);
+  for (const u of cloud) {
+    if (!u?.canonical) continue;
+    const prev = byC.get(u.canonical);
+    const merged: PlayerIdentity = {
+      id: u.id || prev?.id || ulidLike(),
+      canonical: u.canonical,
+      displayName: u.displayName || prev?.displayName || u.canonical,
+      createdAt: u.createdAt || prev?.createdAt || new Date().toISOString(),
+      lastPlayedAt: u.lastPlayedAt ?? prev?.lastPlayedAt,
+      gamesPlayed: Math.max(prev?.gamesPlayed ?? 0, u.gamesPlayed ?? 0),
+      wins: Math.max(prev?.wins ?? 0, u.wins ?? 0),
+    };
+    byC.set(u.canonical, merged);
+  }
+  // Sort by most recently played
+  return Array.from(byC.values()).sort((a, b) => {
+    const da = a.lastPlayedAt ? Date.parse(a.lastPlayedAt) : 0;
+    const db = b.lastPlayedAt ? Date.parse(b.lastPlayedAt) : 0;
+    return db - da;
+  });
+}
+
 function ulidLike(): string {
   return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10).toUpperCase();
 }
@@ -824,6 +861,29 @@ export default function Page() {
     // Load identity data
     setLibrary(loadLibrary());
     setLineups(loadLineups());
+  }, []);
+
+  // Fetch unified identities from cloud and merge into local library so the popover shows past players
+  useEffect(() => {
+    let aborted = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/history?ts=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({} as any));
+        const cloud = (data?.identities ?? []) as CloudIdentity[];
+        if (!Array.isArray(cloud) || cloud.length === 0) return;
+        if (aborted) return;
+        setLibrary((lib) => {
+          const merged = mergeCloudIdentities(lib, cloud);
+          try { saveLibrary(merged); } catch {}
+          return merged;
+        });
+      } catch {
+        // ignore — offline or first run
+      }
+    })();
+    return () => { aborted = true; };
   }, []);
 
   const locked = useMemo(() => hasAnyInput(players), [players]);

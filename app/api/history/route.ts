@@ -84,6 +84,20 @@ export async function GET() {
       }
     }
 
+    // Load unified users to map canonical → stable identity id (non-fatal)
+    let users: any[] = [];
+    {
+      const { data: uData, error: uErr } = await admin
+        .from("users")
+        .select("id, canonical, display_name, avatar_key, color_hint, created_at");
+      if (!uErr) {
+        users = uData ?? [];
+      } else {
+        console.warn("[/api/history] users select failed, continuing without identities:", uErr.message);
+        users = [];
+      }
+    }
+
     // Normalize history shape for client (createdAt, prestigeOrder, players, version)
     const history = (games ?? []).map((g: any) => ({
       id: g.id,
@@ -151,22 +165,29 @@ export async function GET() {
     }
 
     const playersByCanonical = new Map<string, any>((players ?? []).map((p: any) => [p.canonical, p]));
+    const usersByCanonical = new Map<string, any>((users ?? []).map((u: any) => [u.canonical, u]));
     const allCanonicals = new Set<string>([
       ...Array.from(sums.keys()),
       ...(players ?? []).map((p: any) => p.canonical),
+      ...(users ?? []).map((u: any) => u.canonical),
     ]);
 
     const leaderboard = Array.from(allCanonicals).map((canonical) => {
       const pRow = playersByCanonical.get(canonical);
+      const uRow = usersByCanonical.get(canonical);
       const rec = sums.get(canonical);
       const avg = rec && rec.count > 0 ? Math.round((rec.total / rec.count) * 10) / 10 : 0;
       const high = rec ? rec.high : 0;
-      const wins = pRow?.wins ?? winsFromHistory.get(canonical) ?? 0;
+      const wins = (pRow?.wins ?? 0) + (winsFromHistory.get(canonical) ?? 0);
       const games = pRow?.games_played ?? (rec?.count ?? 0);
-      const name = pRow?.display_name ?? lastNameByCanonical.get(canonical) ?? "Unknown";
+      const name =
+        uRow?.display_name ??
+        pRow?.display_name ??
+        lastNameByCanonical.get(canonical) ??
+        "Unknown";
       const lastPlayedAt = pRow?.last_played_at ?? lastPlayedAtByCanonical.get(canonical) ?? null;
-      const id = pRow?.id ?? `c:${canonical}`;
-      return { id, name, wins, games, avg, high, lastPlayedAt };
+      const id = uRow?.id ?? pRow?.id ?? `c:${canonical}`;
+      return { id, name, wins, games, avg, high, lastPlayedAt, canonical };
     });
 
     // Remove any entries that have zero games and zero stats to avoid noise
@@ -180,7 +201,35 @@ export async function GET() {
       return a.name.localeCompare(b.name);
     });
 
-    return NextResponse.json({ ok: true, history, leaderboard: filtered, env: envDiagnostics() });
+    // Prepare identities payload for client assignment popover.
+    // Prefer authoritative "users" table; if empty, derive from leaderboard.
+    let identities = (users ?? []).map((u: any) => ({
+      id: u.id,
+      canonical: u.canonical,
+      displayName: u.display_name,
+      avatarKey: u.avatar_key ?? null,
+      colorHint: u.color_hint ?? null,
+      createdAt: u.created_at ?? null,
+    }));
+
+    if ((identities?.length ?? 0) === 0) {
+      identities = filtered.map((row: any) => ({
+        id: row.id,
+        canonical: row.canonical || canonicalizeName(row.name || ""),
+        displayName: row.name,
+        avatarKey: null,
+        colorHint: null,
+        createdAt: row.lastPlayedAt ?? null,
+      }));
+    }
+
+    return NextResponse.json({
+      ok: true,
+      history,
+      leaderboard: filtered.map(({ canonical, ...r }) => r),
+      identities,
+      env: envDiagnostics(),
+    });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message || String(err), env: envDiagnostics() }, { status: 500 });
   }
