@@ -1673,15 +1673,22 @@ function ArchivesModal({
                               <div className="row" style={{ justifyContent: "space-between" }}>
                                 <span className="caption">Painting Values</span>
                               </div>
-                              {Object.entries(pl.breakdown.perColor as Record<string, any>).map(([k, v]) => (
+                              {Object.entries(pl.breakdown.perColor as Record<Color, any>).map(([k, v]) => (
                                 <div key={k} className="row" style={{ justifyContent: "space-between" }}>
-                                  <span>{k.charAt(0).toUpperCase() + k.slice(1)} {v.tiles} × ×{v.multiplier} =</span>
+                                  <span>
+                                    <span style={{ color: `var(--accent-${k})`, fontWeight: 700 }}>
+                                      {k.charAt(0).toUpperCase() + k.slice(1)}
+                                    </span>{" "}
+                                    {v.tiles} × {v.multiplier} =
+                                  </span>
                                   <span>{v.points}</span>
                                 </div>
                               ))}
                               {/* Eyeline */}
                               <div className="row" style={{ justifyContent: "space-between" }}>
-                                <span>Eyeline {pl.breakdown.eyeline.tiles} × +3 =</span>
+                                <span>
+                                  Eyeline: {pl.breakdown.eyeline.tiles} tiles × 3 pts =
+                                </span>
                                 <span>+{pl.breakdown.eyeline.points}</span>
                               </div>
                               {/* Decor */}
@@ -1961,14 +1968,17 @@ function Results({
               return (
                 <div key={c} className="row" style={{ justifyContent: "space-between" }}>
                   <span>
-                    {colorLabel(c)} {item.tiles} × ×{item.multiplier} =
+                    <span style={{ color: `var(--accent-${c})`, fontWeight: 700 }}>{colorLabel(c)}</span> {item.tiles} ×{" "}
+                    {item.multiplier} =
                   </span>
                   <span>{item.points}</span>
                 </div>
               );
             })}
             <div className="row" style={{ justifyContent: "space-between", marginTop: 6 }}>
-              <span>Eyeline {winner.breakdown.eyeline.tiles} × +3 =</span>
+              <span>
+                Eyeline: {winner.breakdown.eyeline.tiles} tiles × 3 pts =
+              </span>
               <span>+{winner.breakdown.eyeline.points}</span>
             </div>
             <div className="row" style={{ justifyContent: "space-between" }}>
@@ -2023,14 +2033,17 @@ function Results({
                 return (
                   <div key={c} className="row" style={{ justifyContent: "space-between" }}>
                     <span>
-                      {colorLabel(c)} {item.tiles} × ×{item.multiplier} =
+                      <span style={{ color: `var(--accent-${c})`, fontWeight: 700 }}>{colorLabel(c)}</span> {item.tiles} ×{" "}
+                      {item.multiplier} =
                     </span>
                     <span>{item.points}</span>
                   </div>
                 );
               })}
               <div className="row" style={{ justifyContent: "space-between", marginTop: 6 }}>
-                <span>Eyeline {p.breakdown.eyeline.tiles} × +3 =</span>
+                <span>
+                  Eyeline: {p.breakdown.eyeline.tiles} tiles × 3 pts =
+                </span>
                 <span>+{p.breakdown.eyeline.points}</span>
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
