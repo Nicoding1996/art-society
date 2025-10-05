@@ -178,8 +178,16 @@ export async function GET() {
       const rec = sums.get(canonical);
       const avg = rec && rec.count > 0 ? Math.round((rec.total / rec.count) * 10) / 10 : 0;
       const high = rec ? rec.high : 0;
-      const wins = (pRow?.wins ?? 0) + (winsFromHistory.get(canonical) ?? 0);
-      const games = pRow?.games_played ?? (rec?.count ?? 0);
+      // Prefer authoritative wins from players table; fall back to history-derived wins only if missing
+      const wins =
+        (pRow && typeof pRow.wins === "number")
+          ? pRow.wins
+          : (winsFromHistory.get(canonical) ?? 0);
+      // Prefer players.games_played; otherwise count appearances in history snapshots
+      const games =
+        (pRow && typeof pRow.games_played === "number")
+          ? pRow.games_played
+          : (rec?.count ?? 0);
       const name =
         uRow?.display_name ??
         pRow?.display_name ??
