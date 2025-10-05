@@ -202,15 +202,22 @@ export async function GET() {
     });
 
     // Prepare identities payload for client assignment popover.
-    // Prefer authoritative "users" table; if empty, derive from leaderboard.
-    let identities = (users ?? []).map((u: any) => ({
-      id: u.id,
-      canonical: u.canonical,
-      displayName: u.display_name,
-      avatarKey: u.avatar_key ?? null,
-      colorHint: u.color_hint ?? null,
-      createdAt: u.created_at ?? null,
-    }));
+    // Include stats (gamesPlayed, wins, lastPlayedAt) by joining with computed leaderboard.
+    const statsByCanonical = new Map<string, any>((filtered ?? []).map((row: any) => [row.canonical, row]));
+    let identities = (users ?? []).map((u: any) => {
+      const stats = statsByCanonical.get(u.canonical);
+      return {
+        id: u.id,
+        canonical: u.canonical,
+        displayName: u.display_name,
+        avatarKey: u.avatar_key ?? null,
+        colorHint: u.color_hint ?? null,
+        createdAt: u.created_at ?? null,
+        lastPlayedAt: stats?.lastPlayedAt ?? null,
+        gamesPlayed: stats?.games ?? 0,
+        wins: stats?.wins ?? 0,
+      };
+    });
 
     if ((identities?.length ?? 0) === 0) {
       identities = filtered.map((row: any) => ({
@@ -220,6 +227,9 @@ export async function GET() {
         avatarKey: null,
         colorHint: null,
         createdAt: row.lastPlayedAt ?? null,
+        lastPlayedAt: row.lastPlayedAt ?? null,
+        gamesPlayed: row.games ?? 0,
+        wins: row.wins ?? 0,
       }));
     }
 

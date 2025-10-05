@@ -170,12 +170,22 @@ function mergeCloudIdentities(local: PlayerIdentity[], cloud: CloudIdentity[]): 
   for (const u of cloud) {
     if (!u?.canonical) continue;
     const prev = byC.get(u.canonical);
+
+    // Choose most recent lastPlayedAt between local and cloud
+    const prevLast = prev?.lastPlayedAt ?? null;
+    const cloudLast = u.lastPlayedAt ?? null;
+    let lastPlayedAt = prevLast;
+    if (cloudLast && (!prevLast || Date.parse(cloudLast) > Date.parse(prevLast))) {
+      lastPlayedAt = cloudLast;
+    }
+
     const merged: PlayerIdentity = {
       id: u.id || prev?.id || ulidLike(),
       canonical: u.canonical,
       displayName: u.displayName || prev?.displayName || u.canonical,
-      createdAt: u.createdAt || prev?.createdAt || new Date().toISOString(),
-      lastPlayedAt: u.lastPlayedAt ?? prev?.lastPlayedAt,
+      // Keep existing createdAt if we already have the identity locally; else use cloud or now
+      createdAt: prev?.createdAt || u.createdAt || new Date().toISOString(),
+      lastPlayedAt: lastPlayedAt || undefined,
       gamesPlayed: Math.max(prev?.gamesPlayed ?? 0, u.gamesPlayed ?? 0),
       wins: Math.max(prev?.wins ?? 0, u.wins ?? 0),
     };
