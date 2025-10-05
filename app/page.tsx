@@ -1478,7 +1478,6 @@ function ArchivesModal({
 
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
-  const [dbHost, setDbHost] = useState<string>("");
  
   const loadArchives = async () => {
     setLoading(true);
@@ -1489,12 +1488,6 @@ function ArchivesModal({
       const data = await res.json();
       setHistory((data.history ?? []) as Game[]);
       setLeaderboard((data.leaderboard ?? []) as any);
-      try {
-        const url: string = data?.env?.url || "";
-        setDbHost(url ? new URL(url).host : "");
-      } catch {
-        setDbHost("");
-      }
     } catch (err) {
       console.warn("[Archives] Cloud fetch failed:", err);
       setHistory([]);
@@ -1517,19 +1510,6 @@ function ArchivesModal({
   }, [library]);
 
   const refresh = () => loadArchives();
-  const flushCloud = async () => {
-    if (!window.confirm("Delete ALL cloud history and lineups? This cannot be undone.")) return;
-    setLoading(true);
-    try {
-      const res = await fetch("/api/history?keepPlayers=true", { method: "DELETE" });
-      if (!res.ok) throw new Error("delete failed");
-      await loadArchives();
-    } catch {
-      setErrorMsg("Failed to flush cloud");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // Leaderboard is provided by the server (/api/history) and stored in `leaderboard` state.
 
@@ -1546,6 +1526,17 @@ function ArchivesModal({
         overflow: "auto",
       }}
     >
+      {/* Top-right close icon */}
+      <button
+        onClick={close}
+        aria-label="Close archives"
+        className="btn btn-outline"
+        style={{ position: "absolute", top: 12, right: 12, height: 32, width: 32, padding: 0, borderRadius: "50%" }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M6 6l12 12M6 18L18 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      </button>
       {/* Header with responsive alignment */}
       <div
         className="card-header"
@@ -1592,8 +1583,6 @@ function ArchivesModal({
 
           {/* Controls */}
           <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <span className="caption" aria-live="polite">DB: {dbHost || "unknown"}</span>
-            {errorMsg ? <span className="caption" style={{ color: "var(--warning)" }}>{errorMsg}</span> : null}
             <button
               className="btn btn-outline"
               style={{ height: 28, paddingInline: 8 }}
@@ -1603,25 +1592,8 @@ function ArchivesModal({
             >
               Refresh
             </button>
-            <button
-              className="btn btn-outline"
-              style={{ height: 28, paddingInline: 8 }}
-              onClick={flushCloud}
-              aria-busy={loading}
-              aria-label="Delete all cloud history and lineups"
-            >
-              Flush Cloud
-            </button>
           </div>
         </div>
-        <button
-          className="btn btn-outline"
-          style={{ height: 32, alignSelf: "center" }}
-          onClick={close}
-          aria-label="Close archives"
-        >
-          Close
-        </button>
       </div>
 
       {tab === "history" ? (
