@@ -6,7 +6,7 @@ Locked configuration summary
 - Minimum width: 320 px
 - Accessibility: WCAG AA; color-blind palettes; left-handed thumb reach mode
 - Prestige Track: four colors assigned to ×5 ×4 ×3 ×2, order locked once scoring begins
-- Scoring: tiles × multiplier; Eyeline +3 per tile for the ×5 color only; Decor +1 each; Full Gallery +5; Complete Board +5; Empty Corners −2 each; Unplaced Paintings −2 each; Faux Pas removed
+- Scoring: tiles × multiplier; Eyeline +3 per tile for the ×5 color only; Decor +1 each; Complete Board +5; Empty Corners −2 each; Unplaced Paintings −2 each; Faux Pas removed
 
 Design tokens
 - Colors
@@ -55,7 +55,7 @@ Score Entry screen
 |  Green  ×4   [-] [ 0 ] [+]                       |
 | Gallery Bonuses                                   |
 |  Decor Tiles  [-] [ 0 ] [+]   +1 each            |
-|  [ ] Full Gallery +5    [ ] Complete Board +5    |
+|  [ ] Complete Board +5                            |
 | Penalties                                         |
 |  Empty Corners    [-] [ 0 ] [+]   −2 each        |
 |  Unplaced Paintings [-] [ 0 ] [+]  −2 each       |
@@ -104,7 +104,6 @@ Breakdown expanded example
   - Yellow 2 × ×2 = 4
   - Green 1 × ×4 = 4
 - Decor 4 × +1 = +4
-- Full Gallery +5
 - Complete Board +5
 - Penalties: Empty corners 2 × −2 = −4; Unplaced 1 × −2 = −2
 - Final Score 42 example only
@@ -162,7 +161,7 @@ Accessibility
 Microcopy inventory
 - Eyeline rule: Only the ×5 color earns +3 per eyeline tile. No cap.
 - Decor helper: +1 each
-- Bonuses: Full Gallery +5, Complete Board +5
+- Bonuses: Complete Board +5
 - Penalties: Empty corners −2 each; Unplaced paintings −2 each
 - Prestige hint: Locked after scoring begins
 - Bounds: Max 20
@@ -176,7 +175,7 @@ Scoring model
 - Per-color subtotal = tiles × assigned multiplier
 - Eyeline bonus = eyeline tiles × 3 for the ×5 color only
 - Decor points = decor tiles × 1
-- Bonuses = Full Gallery 5 plus Complete Board 5
+- Bonuses = Complete Board 5
 - Penalties = empty corners × 2 plus unplaced paintings × 2
 - Final score = sum of per-color subtotals plus eyeline bonus plus decor plus bonuses minus penalties
 
@@ -188,9 +187,9 @@ Acceptance tests for scoring
   - Yellow tiles 0 → 0
   - Green tiles 1 → 1 × 4 = 4
   - Decor 4 → 4
-  - Full Gallery on, Complete Board on → 10
+  - Complete Board on → 5
   - Penalties: Empty 2 → −4; Unplaced 1 → −2
-  - Total = 15 + 6 + 6 + 0 + 4 + 10 − 6 = 35
+  - Total = 15 + 6 + 6 + 0 + 4 + 5 − 6 = 30
 - Example B
   - Prestige order Red ×5; Red tiles 5 with eyeline 5; others 0
   - Decor 0; bonuses off; penalties 0
@@ -274,29 +273,17 @@ Global interaction patterns
   - When at bounds, play gentle boundary animation; announce “Max 20” or “Min 0”
   - Penalties and decor use the same constraints; no negative values
 
-2) Toggle Switch (Full Gallery +5)
-- Anatomy
-  - Pill 44 px height; handle 20–22 px; 10 px radius; label on the right
-- States
-  - Off: track gray 30%; handle cream with navy stroke
-  - On: track navy; handle gold rim; label boldens by +1 weight
-  - Focus: outer outline; also handles keyboard toggling with Space/Enter
-  - Disabled: 40% opacity; retains contrast for legibility
-- Behavior
-  - Accessible name: “Full Gallery bonus”
-  - Announcement on change: “Full Gallery on” or “off”
-  - Left-handed: aligns control and label to left edge of card section
-
-3) Checkbox (Complete Board +5)
+2) Checkbox (Complete Board +5)
 - Anatomy
   - Box 20 px, 2 px navy stroke, 10 px radius; checkmark navy
 - States
-  - Checked/Unchecked; Hover; Focus; Disabled consistent with toggle
+  - Checked/Unchecked; Hover; Focus; Disabled
 - Behavior
-  - Label includes delta: “Complete Board +5”
+  - Label includes delta: Complete Board +5
   - ARIA role checkbox; announces current state and delta context
+  - Left-handed: aligns control and label to left edge of card section
 
-4) Prestige Track Reorder (×5 ×4 ×3 ×2)
+3) Prestige Track Reorder (×5 ×4 ×3 ×2)
 - Anatomy
   - Four color chips (circles), 36–44 px; label below with multiplier in muted gray
   - 6-dot drag handle appears on long-press or hover
@@ -455,7 +442,6 @@ Player
 - paintings: { red: number, blue: number, yellow: number, green: number } // 0–20
 - eyelineCountForX5: number // 0–20, clamped to tiles of ×5 color
 - decorCount: number // 0–20
-- fullGallery: boolean
 - completeBoard: boolean
 - penalties: { emptyCorners: number, unplacedPaintings: number } // 0–20
 - finalScore: number // computed and persisted with game
@@ -464,7 +450,7 @@ Derived computation (documented, not enforced by API)
 - perColorSubtotal[color] = paintings[color] × prestige multiplier for that color
 - eyelineBonus = eyelineCountForX5 × 3 (only ×5 color)
 - decorPoints = decorCount × 1
-- bonuses = (fullGallery ? 5 : 0) + (completeBoard ? 5 : 0)
+- bonuses = (completeBoard ? 5 : 0)
 - penalties = emptyCorners × 2 + unplacedPaintings × 2
 - finalScore = Σ perColorSubtotal + eyelineBonus + decorPoints + bonuses − penalties
 
@@ -488,7 +474,6 @@ POST /api/games
         "paintings": { "red": 3, "blue": 3, "yellow": 2, "green": 1 },
         "eyelineCountForX5": 2,
         "decorCount": 4,
-        "fullGallery": true,
         "completeBoard": true,
         "penalties": { "emptyCorners": 2, "unplacedPaintings": 1 },
         "finalScore": 35
@@ -550,7 +535,6 @@ GET /api/games/:id
         "paintings": { "red": 3, "blue": 3, "yellow": 2, "green": 1 },
         "eyelineCountForX5": 2,
         "decorCount": 4,
-        "fullGallery": true,
         "completeBoard": true,
         "penalties": { "emptyCorners": 2, "unplacedPaintings": 1 },
         "finalScore": 127,
@@ -563,7 +547,7 @@ GET /api/games/:id
           },
           "eyeline": { "tiles": 2, "perTile": 3, "points": 6 },
           "decor": 4,
-          "bonuses": { "fullGallery": 5, "completeBoard": 5 },
+          "bonuses": { "completeBoard": 5 },
           "penalties": { "emptyCorners": 4, "unplacedPaintings": 2 }
         }
       },
@@ -631,15 +615,15 @@ Bonuses and Penalties
 5. Decor scoring
    - decorCount = 4 → +4 points
 
-6. Full Gallery and Complete Board stack
-   - fullGallery = true; completeBoard = true → +10 total
+6. Complete Board bonus
+   - completeBoard = true → +5 total
 
 7. Penalties subtract
    - emptyCorners = 2 → −4; unplacedPaintings = 1 → −2
 
 Totals
 8. Combined score calculation
-   - Use Example A in spec; Expected total = 35 (or updated to final illustrative sum when figures align)
+   - Use Example A in spec; Expected total = 30
 
 Sorting
 9. Results screen sorting and tie-breakers
@@ -729,7 +713,7 @@ Screen reader semantics
   - Toast container: aria-live="polite" to announce feedback
 - Roles/labels
   - Steppers: role="spinbutton" with aria-valuemin/max/now; aria-label includes color name or metric
-  - Toggles/checkboxes: labels include their effect, e.g., “Full Gallery +5”
+  - Toggles/checkboxes: labels include their effect, e.g., “Complete Board +5”
   - Accordion headers: button with aria-expanded; content region labeledby header id
   - Prestige list: role="listbox" or sortable list pattern with announced position changes
 - Focus order: Header → Prestige Track chips (L to R) → Player cards top to bottom (name → painting steppers → eyeline if visible → bonuses → penalties → card summary) → fixed footer CTA
@@ -797,7 +781,7 @@ Breakdown itemization (expanded)
   - Per color: “Blue 3 × ×5 = 15”
   - Eyeline (×5 color only): “Blue eyeline 2 × +3 = +6”
   - Decor: “4 × +1 = +4”
-  - Bonuses: “Full Gallery +5”; “Complete Board +5”
+  - Bonuses: “Complete Board +5”; “Complete Board +5”
   - Penalties: “Empty corners 2 × −2 = −4”; “Unplaced 1 × −2 = −2”
 - Alignment:
   - Numbers right-aligned using tabular figures
