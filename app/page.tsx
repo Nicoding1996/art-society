@@ -2496,79 +2496,124 @@ function generateGameRecap(playersSorted: ResultsPlayer[]): string[] {
   const winner = playersSorted[0]!;
   const runnerUp = playersSorted[1];
 
-  // Margin of victory
+  // Use the same color labels players see on the board
+  const artColorName: Record<Color, string> = {
+    red: "Red",
+    blue: "Blue",
+    yellow: "Yellow",
+    green: "Green",
+  };
+
+  // --- Opening: margin of victory, art-world tone ---
   if (runnerUp) {
     const margin = winner.finalScore - runnerUp.finalScore;
     if (margin === 0) {
       lines.push(
-        `${winner.name} and ${runnerUp.name} tied at ${winner.finalScore} points — a nail-biter decided by tie-breaker.`
+        `A scandal at the gallery — ${winner.name} and ${runnerUp.name} tied at ${winner.finalScore} prestige. The tie-breaker was needed to crown tonight's connoisseur.`
       );
     } else if (margin <= 3) {
       lines.push(
-        `${winner.name} edged out ${runnerUp.name} by just ${margin} point${margin === 1 ? "" : "s"}. That was close.`
+        `The auction house is buzzing. ${winner.name} outbid ${runnerUp.name} by a mere ${margin} prestige — the kind of razor-thin margin that makes collectors lose sleep.`
       );
     } else if (margin >= 30) {
       lines.push(
-        `${winner.name} dominated with ${winner.finalScore} points — a ${margin}-point lead over ${runnerUp.name}.`
+        `${winner.name}'s gallery was the talk of the evening — a commanding ${winner.finalScore} prestige, leaving ${runnerUp.name} trailing by ${margin}. A masterclass in curation.`
+      );
+    } else if (margin >= 15) {
+      lines.push(
+        `${winner.name} curated a stunning collection worth ${winner.finalScore} prestige, comfortably ahead of ${runnerUp.name} by ${margin}. The critics are impressed.`
       );
     } else {
       lines.push(
-        `${winner.name} takes the win with ${winner.finalScore} points, ${margin} ahead of ${runnerUp.name}.`
+        `${winner.name} claims the gavel with ${winner.finalScore} prestige, edging past ${runnerUp.name} by ${margin}. A well-played evening at the auction.`
       );
     }
   } else {
-    lines.push(`${winner.name} finishes with ${winner.finalScore} points.`);
+    lines.push(`${winner.name} stands alone with a collection worth ${winner.finalScore} prestige.`);
   }
 
-  // Best scoring category for winner
+  // --- Winner's strategy narrative ---
   const bd = winner.breakdown;
   if (bd) {
     const colorEntries = COLORS.map((c) => ({
       color: c,
       pts: bd.perColor[c]?.points ?? 0,
+      tiles: bd.perColor[c]?.tiles ?? 0,
+      mul: bd.perColor[c]?.multiplier ?? 0,
     })).sort((a, b) => b.pts - a.pts);
     const best = colorEntries[0]!;
+    const second = colorEntries[1];
+
+    // Dominant color strategy
     if (best.pts > 0) {
+      const totalPaintingPts = colorEntries.reduce((s, e) => s + e.pts, 0);
+      const ratio = totalPaintingPts > 0 ? best.pts / totalPaintingPts : 0;
+
+      if (ratio >= 0.6 && best.tiles >= 3) {
+        lines.push(
+          `${winner.name} went all-in on ${artColorName[best.color]} works — ${best.tiles} paintings at ×${best.mul} drove ${best.pts} of their prestige. A bold collector who knew the market.`
+        );
+      } else if (second && second.pts > 0 && best.pts - second.pts <= 4) {
+        lines.push(
+          `A diversified portfolio — ${winner.name} balanced ${artColorName[best.color]} and ${artColorName[second.color]} collections, spreading risk across the auction floor.`
+        );
+      } else if (best.pts > 0) {
+        lines.push(
+          `${winner.name}'s ${artColorName[best.color]} collection was the centerpiece, contributing ${best.pts} prestige to the gallery.`
+        );
+      }
+    }
+
+    // Eyeline narrative
+    if (bd.eyeline.points >= 12) {
       lines.push(
-        `${winner.name}'s strongest suit was ${colorLabel(best.color)} paintings, scoring ${best.pts} points.`
+        `The eyeline placement was exquisite — ${bd.eyeline.tiles} paintings perfectly positioned for +${bd.eyeline.points} bonus. The gallery visitors couldn't look away.`
+      );
+    } else if (bd.eyeline.points >= 6) {
+      lines.push(
+        `Smart eyeline curation added +${bd.eyeline.points} to the collection. Every painting at the right height.`
       );
     }
 
-    // Eyeline highlight
-    if (bd.eyeline.points >= 9) {
+    // Decor narrative
+    if (bd.decor >= 6) {
       lines.push(
-        `Impressive eyeline play — ${bd.eyeline.tiles} tiles for +${bd.eyeline.points} bonus points.`
+        `${bd.decor} points in decor — the frames and finishing touches elevated the whole gallery.`
       );
     }
 
-    // Penalty-free highlight
+    // Clean gallery
     const totalPenalties = (bd.penalties.emptyCorners ?? 0) + (bd.penalties.unplacedPaintings ?? 0);
     if (totalPenalties === 0 && winner.finalScore > 0) {
-      lines.push(`A clean gallery — no penalties at all.`);
+      lines.push(`Not a single empty corner or wasted canvas. A pristine gallery from wall to wall.`);
     }
 
-    // Complete Board bonus
+    // Complete Board
     if ((bd.bonuses.completeBoard ?? 0) > 0) {
-      lines.push(`Complete Board bonus — a clean +5.`);
+      lines.push(`Every space filled, every tile placed — the Complete Board bonus was well earned.`);
     }
   }
 
-  // Biggest penalty victim
+  // --- Penalty drama ---
   const penaltyVictim = playersSorted
     .map((p) => ({
       name: p.name,
-      total:
-        (p.breakdown?.penalties?.emptyCorners ?? 0) +
-        (p.breakdown?.penalties?.unplacedPaintings ?? 0),
+      corners: p.breakdown?.penalties?.emptyCorners ?? 0,
+      unplaced: p.breakdown?.penalties?.unplacedPaintings ?? 0,
+      total: (p.breakdown?.penalties?.emptyCorners ?? 0) + (p.breakdown?.penalties?.unplacedPaintings ?? 0),
     }))
     .sort((a, b) => b.total - a.total)[0];
   if (penaltyVictim && penaltyVictim.total >= 8) {
     lines.push(
-      `${penaltyVictim.name} took a heavy −${penaltyVictim.total} in penalties. Ouch.`
+      `Meanwhile, ${penaltyVictim.name}'s gallery had some issues — ${penaltyVictim.total} prestige lost to empty walls and unplaced works. The critics noticed.`
+    );
+  } else if (penaltyVictim && penaltyVictim.total >= 4) {
+    lines.push(
+      `${penaltyVictim.name} left a few gaps on the wall — ${penaltyVictim.total} prestige slipped away in penalties.`
     );
   }
 
-  // 2-player duel: add loser highlight since there's no mid-table battle
+  // --- 2-player duel: rival narrative ---
   if (playersSorted.length === 2 && runnerUp) {
     const loserBd = runnerUp.breakdown;
     if (loserBd) {
@@ -2578,14 +2623,15 @@ function generateGameRecap(playersSorted: ResultsPlayer[]): string[] {
       })).sort((a, b) => b.pts - a.pts)[0]!;
       if (loserBest.pts > 0 && loserBest.pts >= (bd?.perColor[loserBest.color]?.points ?? 0)) {
         lines.push(
-          `${runnerUp.name} led in ${colorLabel(loserBest.color)} paintings with ${loserBest.pts} points, but it wasn't enough.`
+          `${runnerUp.name} actually cornered the ${artColorName[loserBest.color]} market with ${loserBest.pts} prestige — but it wasn't enough to win the evening.`
         );
       }
     }
   }
 
-  // Closest non-winner gap
+  // --- Multi-player drama ---
   if (playersSorted.length >= 3) {
+    // Close mid-table battle
     let minGap = Infinity;
     let gapPair = "";
     for (let i = 1; i < playersSorted.length - 1; i++) {
@@ -2596,7 +2642,22 @@ function generateGameRecap(playersSorted: ResultsPlayer[]): string[] {
       }
     }
     if (minGap <= 2 && minGap < Infinity) {
-      lines.push(`Tight race between ${gapPair} — only ${minGap} point${minGap === 1 ? "" : "s"} apart.`);
+      lines.push(`The battle for the lower podium was fierce — ${gapPair} separated by just ${minGap} prestige.`);
+    }
+
+    // Last place consolation
+    const last = playersSorted[playersSorted.length - 1]!;
+    const lastBd = last.breakdown;
+    if (lastBd) {
+      const lastBest = COLORS.map((c) => ({
+        color: c,
+        pts: lastBd.perColor[c]?.points ?? 0,
+      })).sort((a, b) => b.pts - a.pts)[0]!;
+      if (lastBest.pts >= 15) {
+        lines.push(
+          `Don't count ${last.name} out — their ${artColorName[lastBest.color]} collection alone was worth ${lastBest.pts}. The taste is there; the strategy needs work.`
+        );
+      }
     }
   }
 
@@ -2771,7 +2832,7 @@ function GameRecapCard({ playersSorted }: { playersSorted: ResultsPlayer[] }) {
 
   return (
     <section className="card" style={{ padding: 12, background: "rgba(200,169,106,0.06)", borderColor: "rgba(200,169,106,0.2)" }}>
-      <div className="section-title" style={{ marginTop: 0, fontSize: 14 }}>📝 Game Recap</div>
+      <div className="section-title" style={{ marginTop: 0, fontSize: 14 }}>🎭 Gallery Review</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {lines.map((line, i) => (
           <div key={i} className="caption" style={{ opacity: 0.85, fontSize: 13, lineHeight: 1.4 }}>
