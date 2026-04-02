@@ -463,3 +463,21 @@ hr {
   text-align: left;
   border-bottom: 1px solid rgba(13,27,42, var(--divider-opacity));
 }
+
+
+/* Clickable leaderboard rows */
+.table tbody tr[role="button"]:hover {
+  background: rgba(200, 169, 106, 0.08);
+}
+.table tbody tr[role="button"]:focus-visible {
+  outline: 2px solid rgba(13, 27, 42, 0.9);
+  outline-offset: -2px;
+}
+
+
+/* Active tab indicator */
+[role="tab"][aria-selected="true"] {
+  background: var(--navy);
+  color: white;
+  border-color: var(--navy);
+}

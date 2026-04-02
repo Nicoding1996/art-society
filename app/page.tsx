@@ -1492,11 +1492,12 @@ function ArchivesModal({
   close: () => void;
   library: PlayerIdentity[];
 }) {
-  const [tab, setTab] = useState<"history" | "leaderboard">("history");
+  const [tab, setTab] = useState<"history" | "leaderboard" | "stats">("history");
   const [history, setHistory] = useState<Game[]>([]);
   const [leaderboard, setLeaderboard] = useState<
     Array<{ id: string; name: string; wins: number; games: number; avg: number; high: number }>
   >([]);
+  const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>("");
@@ -1587,19 +1588,28 @@ function ArchivesModal({
               role="tab"
               aria-selected={tab === "history"}
               className="btn btn-outline"
-              style={{ height: 32, paddingInline: 10 }}
+              style={{ height: 28, paddingInline: 8, fontSize: 12 }}
               onClick={() => setTab("history")}
             >
-              Game History
+              History
             </button>
             <button
               role="tab"
               aria-selected={tab === "leaderboard"}
               className="btn btn-outline"
-              style={{ height: 32, paddingInline: 10 }}
+              style={{ height: 28, paddingInline: 8, fontSize: 12 }}
               onClick={() => setTab("leaderboard")}
             >
-              Player Leaderboard
+              Leaderboard
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "stats"}
+              className="btn btn-outline"
+              style={{ height: 28, paddingInline: 8, fontSize: 12 }}
+              onClick={() => setTab("stats")}
+            >
+              Stats
             </button>
           </div>
 
@@ -1747,7 +1757,7 @@ function ArchivesModal({
             })
           )}
         </div>
-      ) : (
+      ) : tab === "leaderboard" ? (
         <section className="card" style={{ padding: 12 }}>
           {leaderboard.length === 0 ? (
             <div className="caption" style={{ padding: 8 }}>No leaderboard yet. Save games to build stats.</div>
@@ -1765,9 +1775,17 @@ function ArchivesModal({
               </thead>
               <tbody>
                 {leaderboard.map((r, i) => (
-                  <tr key={r.id}>
+                  <tr
+                    key={r.id}
+                    onClick={() => { setSelectedPlayer(canonicalizeName(r.name || "")); setTab("stats"); }}
+                    style={{ cursor: "pointer" }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedPlayer(canonicalizeName(r.name || "")); setTab("stats"); } }}
+                    aria-label={`View stats for ${r.name}`}
+                  >
                     <td>#{i + 1}</td>
-                    <td>{r.name}</td>
+                    <td style={{ textDecoration: "underline" }}>{r.name}</td>
                     <td>{r.wins}</td>
                     <td>{r.games}</td>
                     <td>{r.avg}</td>
@@ -1778,7 +1796,38 @@ function ArchivesModal({
             </table>
           )}
         </section>
-      )}
+      ) : tab === "stats" ? (
+        <div className="stack" style={{ gap: 8 }}>
+          {/* Player selector */}
+          <div className="card" style={{ padding: 10 }}>
+            <div className="section-title" style={{ marginTop: 0 }}>Select Player</div>
+            <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+              {leaderboard.map((r) => {
+                const c = canonicalizeName(r.name || "");
+                return (
+                  <button
+                    key={r.id}
+                    className={`btn ${selectedPlayer === c ? "btn-primary" : "btn-outline"}`}
+                    style={{ height: 32, paddingInline: 10 }}
+                    onClick={() => setSelectedPlayer(c)}
+                    aria-pressed={selectedPlayer === c}
+                  >
+                    {r.name}
+                  </button>
+                );
+              })}
+              {leaderboard.length === 0 && (
+                <div className="caption" style={{ padding: 8 }}>No players yet. Save games to see stats.</div>
+              )}
+            </div>
+          </div>
+
+          {/* Stats + Achievements for selected player */}
+          {selectedPlayer && (
+            <SelectedPlayerStats playerCanonical={selectedPlayer} history={history} />
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1966,6 +2015,9 @@ function Results({
     <div className="stack" style={{ marginBottom: 80 }}>
       <h1 className="h1">Game Results</h1>
 
+      {/* Game Recap */}
+      <GameRecapCard playersSorted={playersSorted} />
+
       <section className="card winner-card">
         <div className="row" style={{ justifyContent: "space-between" }}>
           <div className="row" style={{ gap: 12, alignItems: "center" }}>
@@ -2119,4 +2171,667 @@ function Results({
       </div>
     </div>
   );
+}
+
+
+/* =========================
+   Achievements System
+   ========================= */
+
+type Achievement = {
+  id: string;
+  icon: string;
+  title: string;
+  description: string;
+  unlocked: boolean;
+  progress?: string; // e.g. "3/10"
+};
+
+function computeAchievements(
+  playerCanonical: string,
+  history: Game[]
+): Achievement[] {
+  // Gather all games this player participated in
+  const myGames = history
+    .map((g) => {
+      const sorted = g.players
+        .slice()
+        .sort((a, b) => {
+          // Manual tie-breaker winner always comes first
+          if ((a as any).tieBreakerWinner && !(b as any).tieBreakerWinner) return -1;
+          if (!(a as any).tieBreakerWinner && (b as any).tieBreakerWinner) return 1;
+          const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+          if (d !== 0) return d;
+          const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
+          if (d2 !== 0) return d2;
+          return (a.name || "").localeCompare(b.name || "");
+        });
+      const me = g.players.find(
+        (p) => canonicalizeName(p.name || "") === playerCanonical
+      );
+      const isWinner =
+        sorted[0] && canonicalizeName(sorted[0].name || "") === playerCanonical;
+      return me ? { game: g, me, sorted, isWinner } : null;
+    })
+    .filter(Boolean) as Array<{
+    game: Game;
+    me: Player;
+    sorted: Player[];
+    isWinner: boolean;
+  }>;
+
+  const totalGames = myGames.length;
+  const totalWins = myGames.filter((g) => g.isWinner).length;
+
+  // Streak calculation (most recent first — history is already sorted desc)
+  let currentStreak = 0;
+  for (const g of myGames) {
+    if (g.isWinner) currentStreak++;
+    else break;
+  }
+
+  // Max streak
+  let maxStreak = 0;
+  let streak = 0;
+  for (const g of myGames) {
+    if (g.isWinner) { streak++; maxStreak = Math.max(maxStreak, streak); }
+    else streak = 0;
+  }
+
+  // High score
+  const highScore = Math.max(0, ...myGames.map((g) => g.me.finalScore ?? 0));
+
+  // Clean wins (zero penalties)
+  const cleanWins = myGames.filter(
+    (g) =>
+      g.isWinner &&
+      (g.me.penalties?.emptyCorners ?? 0) === 0 &&
+      (g.me.penalties?.unplacedPaintings ?? 0) === 0
+  ).length;
+
+  // Full house (both bonuses)
+  const fullHouseGames = myGames.filter(
+    (g) => g.me.fullGallery && g.me.completeBoard
+  ).length;
+
+  // Minimalist wins (win with 0 decor)
+  const minimalistWins = myGames.filter(
+    (g) => g.isWinner && (g.me.decorCount ?? 0) === 0
+  ).length;
+
+  // Eyeline master (15+ eyeline points = 5+ eyeline tiles)
+  const eyelineMasterGames = myGames.filter(
+    (g) => (g.me.eyelineCountForX5 ?? 0) >= 5
+  ).length;
+
+  // Close calls (won by 3 or fewer points)
+  const closeWins = myGames.filter((g) => {
+    if (!g.isWinner || g.sorted.length < 2) return false;
+    const gap = (g.sorted[0]!.finalScore ?? 0) - (g.sorted[1]!.finalScore ?? 0);
+    return gap <= 3 && gap >= 0;
+  }).length;
+
+  // Comeback: won after being last in previous game
+  let comebacks = 0;
+  for (let i = 0; i < myGames.length - 1; i++) {
+    const curr = myGames[i]!;
+    const prev = myGames[i + 1]!;
+    const prevRank = prev.sorted.findIndex(
+      (p) => canonicalizeName(p.name || "") === playerCanonical
+    );
+    if (curr.isWinner && prevRank === prev.sorted.length - 1) comebacks++;
+  }
+
+  return [
+    {
+      id: "collector",
+      icon: "🎨",
+      title: "The Collector",
+      description: "Play 50 games",
+      unlocked: totalGames >= 50,
+      progress: `${Math.min(totalGames, 50)}/50`,
+    },
+    {
+      id: "patron",
+      icon: "🏆",
+      title: "Patron of the Arts",
+      description: "Win 10 games",
+      unlocked: totalWins >= 10,
+      progress: `${Math.min(totalWins, 10)}/10`,
+    },
+    {
+      id: "first-win",
+      icon: "⭐",
+      title: "First Victory",
+      description: "Win your first game",
+      unlocked: totalWins >= 1,
+    },
+    {
+      id: "clean-gallery",
+      icon: "✨",
+      title: "Clean Gallery",
+      description: "Win with zero penalties",
+      unlocked: cleanWins >= 1,
+    },
+    {
+      id: "full-house",
+      icon: "🏛️",
+      title: "Full House",
+      description: "Get both Full Gallery and Complete Board in one game",
+      unlocked: fullHouseGames >= 1,
+    },
+    {
+      id: "minimalist",
+      icon: "🖼️",
+      title: "Minimalist",
+      description: "Win with 0 decor tiles",
+      unlocked: minimalistWins >= 1,
+    },
+    {
+      id: "eyeline-master",
+      icon: "👁️",
+      title: "Eyeline Master",
+      description: "Score 15+ eyeline points in a single game (5+ tiles)",
+      unlocked: eyelineMasterGames >= 1,
+    },
+    {
+      id: "high-roller",
+      icon: "💎",
+      title: "High Roller",
+      description: "Score 150+ in a single game",
+      unlocked: highScore >= 150,
+    },
+    {
+      id: "hot-streak",
+      icon: "🔥",
+      title: "Hot Streak",
+      description: "Win 3 games in a row",
+      unlocked: maxStreak >= 3,
+      progress: `Best: ${maxStreak}`,
+    },
+    {
+      id: "photo-finish",
+      icon: "📸",
+      title: "Photo Finish",
+      description: "Win by 3 points or fewer",
+      unlocked: closeWins >= 1,
+    },
+    {
+      id: "comeback-kid",
+      icon: "🔄",
+      title: "Comeback Kid",
+      description: "Win after finishing last in the previous game",
+      unlocked: comebacks >= 1,
+    },
+    {
+      id: "veteran",
+      icon: "🎖️",
+      title: "Veteran",
+      description: "Play 20 games",
+      unlocked: totalGames >= 20,
+      progress: `${Math.min(totalGames, 20)}/20`,
+    },
+  ];
+}
+
+/* =========================
+   Player Stats Computation
+   ========================= */
+
+type PlayerStats = {
+  name: string;
+  totalGames: number;
+  wins: number;
+  winRate: number;
+  avgScore: number;
+  highScore: number;
+  lowScore: number;
+  currentStreak: number;
+  bestStreak: number;
+  favoriteColor: Color | null;
+  recentScores: number[]; // last 10, newest first
+  headToHead: Array<{ opponent: string; wins: number; losses: number; games: number }>;
+};
+
+function computePlayerStats(
+  playerCanonical: string,
+  history: Game[]
+): PlayerStats | null {
+  const myGames = history
+    .map((g) => {
+      const sorted = g.players
+        .slice()
+        .sort((a, b) => {
+          // Manual tie-breaker winner always comes first
+          if ((a as any).tieBreakerWinner && !(b as any).tieBreakerWinner) return -1;
+          if (!(a as any).tieBreakerWinner && (b as any).tieBreakerWinner) return 1;
+          const d = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+          if (d !== 0) return d;
+          const d2 = (b.decorCount ?? 0) - (a.decorCount ?? 0);
+          if (d2 !== 0) return d2;
+          return (a.name || "").localeCompare(b.name || "");
+        });
+      const me = g.players.find(
+        (p) => canonicalizeName(p.name || "") === playerCanonical
+      );
+      const isWinner =
+        sorted[0] && canonicalizeName(sorted[0].name || "") === playerCanonical;
+      return me ? { game: g, me, sorted, isWinner: !!isWinner } : null;
+    })
+    .filter(Boolean) as Array<{
+    game: Game;
+    me: Player;
+    sorted: Player[];
+    isWinner: boolean;
+  }>;
+
+  if (myGames.length === 0) return null;
+
+  const displayName = myGames[0]!.me.name;
+  const totalGames = myGames.length;
+  const wins = myGames.filter((g) => g.isWinner).length;
+  const scores = myGames.map((g) => g.me.finalScore ?? 0);
+  const avgScore = Math.round((scores.reduce((a, b) => a + b, 0) / totalGames) * 10) / 10;
+  const highScore = Math.max(...scores);
+  const lowScore = Math.min(...scores);
+
+  // Streaks
+  let currentStreak = 0;
+  for (const g of myGames) {
+    if (g.isWinner) currentStreak++;
+    else break;
+  }
+  let bestStreak = 0;
+  let s = 0;
+  for (const g of myGames) {
+    if (g.isWinner) { s++; bestStreak = Math.max(bestStreak, s); }
+    else s = 0;
+  }
+
+  // Favorite color (which color contributes most points across all games)
+  const colorPoints: Record<Color, number> = { red: 0, blue: 0, yellow: 0, green: 0 };
+  for (const g of myGames) {
+    if (g.me.breakdown?.perColor) {
+      for (const c of COLORS) {
+        colorPoints[c] += g.me.breakdown.perColor[c]?.points ?? 0;
+      }
+    } else if (g.me.paintings) {
+      // Fallback: estimate from paintings × prestige
+      const muls = multiplierMap(g.game.prestigeOrder);
+      for (const c of COLORS) {
+        colorPoints[c] += (g.me.paintings[c] ?? 0) * muls[c];
+      }
+    }
+  }
+  const maxColorPts = Math.max(...Object.values(colorPoints));
+  const favoriteColor = maxColorPts > 0
+    ? (COLORS.find((c) => colorPoints[c] === maxColorPts) ?? null)
+    : null;
+
+  // Recent scores (last 10)
+  const recentScores = scores.slice(0, 10);
+
+  // Head-to-head
+  const h2hMap = new Map<string, { name: string; wins: number; losses: number; games: number }>();
+  for (const g of myGames) {
+    for (const p of g.sorted) {
+      const opp = canonicalizeName(p.name || "");
+      if (opp === playerCanonical || !opp) continue;
+      const rec = h2hMap.get(opp) ?? { name: p.name || opp, wins: 0, losses: 0, games: 0 };
+      rec.name = p.name || rec.name; // keep latest display name
+      rec.games++;
+      if (g.isWinner) rec.wins++;
+      else {
+        // Did this opponent win?
+        const oppIsWinner =
+          g.sorted[0] && canonicalizeName(g.sorted[0].name || "") === opp;
+        if (oppIsWinner) rec.losses++;
+      }
+      h2hMap.set(opp, rec);
+    }
+  }
+  const headToHead = Array.from(h2hMap.entries())
+    .map(([, rec]) => ({ opponent: rec.name, wins: rec.wins, losses: rec.losses, games: rec.games }))
+    .sort((a, b) => b.games - a.games);
+
+  return {
+    name: displayName,
+    totalGames,
+    wins,
+    winRate: totalGames > 0 ? Math.round((wins / totalGames) * 100) : 0,
+    avgScore,
+    highScore,
+    lowScore,
+    currentStreak,
+    bestStreak,
+    favoriteColor,
+    recentScores,
+    headToHead,
+  };
+}
+
+/* =========================
+   Game Recap (flavor text)
+   ========================= */
+
+function generateGameRecap(playersSorted: ResultsPlayer[]): string[] {
+  const lines: string[] = [];
+  if (playersSorted.length === 0) return lines;
+
+  const winner = playersSorted[0]!;
+  const runnerUp = playersSorted[1];
+
+  // Margin of victory
+  if (runnerUp) {
+    const margin = winner.finalScore - runnerUp.finalScore;
+    if (margin === 0) {
+      lines.push(
+        `${winner.name} and ${runnerUp.name} tied at ${winner.finalScore} points — a nail-biter decided by tie-breaker.`
+      );
+    } else if (margin <= 3) {
+      lines.push(
+        `${winner.name} edged out ${runnerUp.name} by just ${margin} point${margin === 1 ? "" : "s"}. That was close.`
+      );
+    } else if (margin >= 30) {
+      lines.push(
+        `${winner.name} dominated with ${winner.finalScore} points — a ${margin}-point lead over ${runnerUp.name}.`
+      );
+    } else {
+      lines.push(
+        `${winner.name} takes the win with ${winner.finalScore} points, ${margin} ahead of ${runnerUp.name}.`
+      );
+    }
+  } else {
+    lines.push(`${winner.name} finishes with ${winner.finalScore} points.`);
+  }
+
+  // Best scoring category for winner
+  const bd = winner.breakdown;
+  if (bd) {
+    const colorEntries = COLORS.map((c) => ({
+      color: c,
+      pts: bd.perColor[c]?.points ?? 0,
+    })).sort((a, b) => b.pts - a.pts);
+    const best = colorEntries[0]!;
+    if (best.pts > 0) {
+      lines.push(
+        `${winner.name}'s strongest suit was ${colorLabel(best.color)} paintings, scoring ${best.pts} points.`
+      );
+    }
+
+    // Eyeline highlight
+    if (bd.eyeline.points >= 9) {
+      lines.push(
+        `Impressive eyeline play — ${bd.eyeline.tiles} tiles for +${bd.eyeline.points} bonus points.`
+      );
+    }
+
+    // Penalty-free highlight
+    const totalPenalties = (bd.penalties.emptyCorners ?? 0) + (bd.penalties.unplacedPaintings ?? 0);
+    if (totalPenalties === 0 && winner.finalScore > 0) {
+      lines.push(`A clean gallery — no penalties at all.`);
+    }
+
+    // Both bonuses
+    if ((bd.bonuses.fullGallery ?? 0) > 0 && (bd.bonuses.completeBoard ?? 0) > 0) {
+      lines.push(`Full Gallery and Complete Board — the full +10 bonus package.`);
+    }
+  }
+
+  // Biggest penalty victim
+  const penaltyVictim = playersSorted
+    .map((p) => ({
+      name: p.name,
+      total:
+        (p.breakdown?.penalties?.emptyCorners ?? 0) +
+        (p.breakdown?.penalties?.unplacedPaintings ?? 0),
+    }))
+    .sort((a, b) => b.total - a.total)[0];
+  if (penaltyVictim && penaltyVictim.total >= 8) {
+    lines.push(
+      `${penaltyVictim.name} took a heavy −${penaltyVictim.total} in penalties. Ouch.`
+    );
+  }
+
+  // 2-player duel: add loser highlight since there's no mid-table battle
+  if (playersSorted.length === 2 && runnerUp) {
+    const loserBd = runnerUp.breakdown;
+    if (loserBd) {
+      const loserBest = COLORS.map((c) => ({
+        color: c,
+        pts: loserBd.perColor[c]?.points ?? 0,
+      })).sort((a, b) => b.pts - a.pts)[0]!;
+      if (loserBest.pts > 0 && loserBest.pts >= (bd?.perColor[loserBest.color]?.points ?? 0)) {
+        lines.push(
+          `${runnerUp.name} led in ${colorLabel(loserBest.color)} paintings with ${loserBest.pts} points, but it wasn't enough.`
+        );
+      }
+    }
+  }
+
+  // Closest non-winner gap
+  if (playersSorted.length >= 3) {
+    let minGap = Infinity;
+    let gapPair = "";
+    for (let i = 1; i < playersSorted.length - 1; i++) {
+      const gap = playersSorted[i]!.finalScore - playersSorted[i + 1]!.finalScore;
+      if (gap < minGap && gap >= 0) {
+        minGap = gap;
+        gapPair = `${playersSorted[i]!.name} and ${playersSorted[i + 1]!.name}`;
+      }
+    }
+    if (minGap <= 2 && minGap < Infinity) {
+      lines.push(`Tight race between ${gapPair} — only ${minGap} point${minGap === 1 ? "" : "s"} apart.`);
+    }
+  }
+
+  return lines;
+}
+
+/* =========================
+   Player Stats Panel (in Archives)
+   ========================= */
+
+function PlayerStatsPanel({
+  stats,
+  achievements,
+}: {
+  stats: PlayerStats;
+  achievements: Achievement[];
+}) {
+  const unlocked = achievements.filter((a) => a.unlocked);
+  const locked = achievements.filter((a) => !a.unlocked);
+
+  return (
+    <div className="stack" style={{ gap: 12 }}>
+      {/* Overview grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 8 }}>
+        <div className="card" style={{ padding: 10, textAlign: "center" }}>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.winRate}%</div>
+          <div className="caption">Win Rate</div>
+        </div>
+        <div className="card" style={{ padding: 10, textAlign: "center" }}>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.wins}/{stats.totalGames}</div>
+          <div className="caption">Wins / Games</div>
+        </div>
+        <div className="card" style={{ padding: 10, textAlign: "center" }}>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.avgScore}</div>
+          <div className="caption">Avg Score</div>
+        </div>
+        <div className="card" style={{ padding: 10, textAlign: "center" }}>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.highScore}</div>
+          <div className="caption">High Score</div>
+        </div>
+        <div className="card" style={{ padding: 10, textAlign: "center" }}>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.currentStreak > 0 ? `🔥 ${stats.currentStreak}` : stats.bestStreak > 0 ? stats.bestStreak : "—"}</div>
+          <div className="caption">{stats.currentStreak > 0 ? "Win Streak" : "Best Streak"}</div>
+        </div>
+        {stats.favoriteColor && (
+          <div className="card" style={{ padding: 10, textAlign: "center" }}>
+            <div style={{ fontSize: 24 }}>
+              <span className={`circle ${stats.favoriteColor}`} style={{ width: 24, height: 24, borderRadius: "50%", display: "inline-block" }} />
+            </div>
+            <div className="caption">Favorite Color</div>
+          </div>
+        )}
+      </div>
+
+      {/* Score trend (last 10 games) */}
+      {stats.recentScores.length >= 2 && (
+        <div className="card" style={{ padding: 10 }}>
+          <div className="section-title" style={{ marginTop: 0 }}>Recent Scores</div>
+          <ScoreTrendChart scores={stats.recentScores} />
+        </div>
+      )}
+
+      {/* Head-to-head */}
+      {stats.headToHead.length > 0 && (
+        <div className="card" style={{ padding: 10 }}>
+          <div className="section-title" style={{ marginTop: 0 }}>Head-to-Head</div>
+          <table className="table" role="table" aria-label="Head-to-head records">
+            <thead>
+              <tr>
+                <th>Opponent</th>
+                <th>W</th>
+                <th>L</th>
+                <th>Games</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.headToHead.slice(0, 8).map((h) => (
+                <tr key={h.opponent}>
+                  <td>{h.opponent}</td>
+                  <td>{h.wins}</td>
+                  <td>{h.losses}</td>
+                  <td>{h.games}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Achievements */}
+      <div className="card" style={{ padding: 10 }}>
+        <div className="section-title" style={{ marginTop: 0 }}>
+          Achievements ({unlocked.length}/{achievements.length})
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 8 }}>
+          {unlocked.map((a) => (
+            <div
+              key={a.id}
+              className="card"
+              style={{ padding: 8, textAlign: "center", background: "rgba(200,169,106,0.1)", border: "1px solid rgba(200,169,106,0.3)" }}
+            >
+              <div style={{ fontSize: 24 }}>{a.icon}</div>
+              <div style={{ fontWeight: 700, fontSize: 12 }}>{a.title}</div>
+              <div className="caption">{a.description}</div>
+              {a.progress && <div className="caption" style={{ opacity: 1, fontWeight: 700 }}>{a.progress}</div>}
+            </div>
+          ))}
+          {locked.map((a) => (
+            <div
+              key={a.id}
+              className="card"
+              style={{ padding: 8, textAlign: "center", opacity: 0.45 }}
+            >
+              <div style={{ fontSize: 24 }}>🔒</div>
+              <div style={{ fontWeight: 700, fontSize: 12 }}>{a.title}</div>
+              <div className="caption">{a.description}</div>
+              {a.progress && <div className="caption">{a.progress}</div>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================
+   Score Trend Chart (CSS-only bar chart)
+   ========================= */
+
+function ScoreTrendChart({ scores }: { scores: number[] }) {
+  // Show oldest→newest (reverse since scores are newest-first)
+  const display = scores.slice().reverse();
+  const max = Math.max(...display, 1);
+  const barHeight = 80;
+
+  return (
+    <div
+      style={{ display: "flex", alignItems: "flex-end", gap: 4, height: barHeight + 20, paddingTop: 8 }}
+      role="img"
+      aria-label={`Score trend: ${display.join(", ")}`}
+    >
+      {display.map((score, i) => {
+        const h = Math.max(4, (score / max) * barHeight);
+        return (
+          <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+            <div
+              style={{
+                width: "100%",
+                maxWidth: 32,
+                height: h,
+                background: "var(--gold)",
+                borderRadius: "4px 4px 0 0",
+                transition: "height 300ms ease",
+              }}
+            />
+            <div className="caption" style={{ fontSize: 10 }}>{score}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
+/* =========================
+   Game Recap Card
+   ========================= */
+
+function GameRecapCard({ playersSorted }: { playersSorted: ResultsPlayer[] }) {
+  const lines = useMemo(() => generateGameRecap(playersSorted), [playersSorted]);
+  if (lines.length === 0) return null;
+
+  return (
+    <section className="card" style={{ padding: 12, background: "rgba(200,169,106,0.06)", borderColor: "rgba(200,169,106,0.2)" }}>
+      <div className="section-title" style={{ marginTop: 0, fontSize: 14 }}>📝 Game Recap</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {lines.map((line, i) => (
+          <div key={i} className="caption" style={{ opacity: 0.85, fontSize: 13, lineHeight: 1.4 }}>
+            {line}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+
+/* =========================
+   Selected Player Stats Wrapper
+   ========================= */
+
+function SelectedPlayerStats({
+  playerCanonical,
+  history,
+}: {
+  playerCanonical: string;
+  history: Game[];
+}) {
+  const stats = useMemo(
+    () => computePlayerStats(playerCanonical, history),
+    [playerCanonical, history]
+  );
+  const achievements = useMemo(
+    () => computeAchievements(playerCanonical, history),
+    [playerCanonical, history]
+  );
+
+  if (!stats) {
+    return <div className="caption" style={{ padding: 8 }}>No game data found for this player.</div>;
+  }
+
+  return <PlayerStatsPanel stats={stats} achievements={achievements} />;
 }
