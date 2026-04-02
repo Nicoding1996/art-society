@@ -31,7 +31,7 @@ type Breakdown = {
   perColor: Record<Color, { tiles: number; multiplier: number; points: number }>;
   eyeline: { tiles: number; perTile: number; points: number };
   decor: number;
-  bonuses: { completeBoard: number };
+  bonuses: { fullGallery: number; completeBoard: number };
   penalties: { emptyCorners: number; unplacedPaintings: number };
 };
 
@@ -42,6 +42,7 @@ type Player = {
   paintings: Record<Color, number>;
   eyelineCountForX5: number;
   decorCount: number;
+  fullGallery: boolean;
   completeBoard: boolean;
   penalties: {
     emptyCorners: number;
@@ -259,7 +260,7 @@ function computeScore(
   const eyelinePoints = eyelineTiles * 3;
 
   const decorPoints = player.decorCount * 1;
-  const bonuses = player.completeBoard ? 5 : 0;
+  const bonuses = (player.fullGallery ? 5 : 0) + (player.completeBoard ? 5 : 0);
   const penalties =
     player.penalties.emptyCorners * 2 + player.penalties.unplacedPaintings * 2;
 
@@ -270,7 +271,7 @@ function computeScore(
     perColor,
     eyeline: { tiles: eyelineTiles, perTile: 3, points: eyelinePoints },
     decor: decorPoints,
-    bonuses: { completeBoard: player.completeBoard ? 5 : 0 },
+    bonuses: { fullGallery: player.fullGallery ? 5 : 0, completeBoard: player.completeBoard ? 5 : 0 },
     penalties: {
       emptyCorners: player.penalties.emptyCorners * 2,
       unplacedPaintings: player.penalties.unplacedPaintings * 2,
@@ -717,6 +718,15 @@ function PlayerCard({
 
       <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
         <Check
+          id={`p-${player.id}-gallery`}
+          checked={player.fullGallery}
+          onChange={(b) => setPlayer({ ...player, fullGallery: b })}
+          label="Full Gallery +5"
+        />
+      </div>
+
+      <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
+        <Check
           id={`p-${player.id}-complete`}
           checked={player.completeBoard}
           onChange={(b) => setPlayer({ ...player, completeBoard: b })}
@@ -821,6 +831,7 @@ function hasAnyInput(players: Player[]): boolean {
   return players.some((p) => {
     if (p.eyelineCountForX5 > 0) return true;
     if (p.decorCount > 0) return true;
+    if (p.fullGallery) return true;
     if (p.completeBoard) return true;
     if (p.penalties.emptyCorners > 0 || p.penalties.unplacedPaintings > 0) return true;
     return COLORS.some((c) => p.paintings[c] > 0);
@@ -834,6 +845,7 @@ function defaultPlayer(i: number): Player {
     paintings: { red: 0, blue: 0, yellow: 0, green: 0 },
     eyelineCountForX5: 0,
     decorCount: 0,
+    fullGallery: false,
     completeBoard: false,
     penalties: { emptyCorners: 0, unplacedPaintings: 0 },
   };
@@ -1708,6 +1720,10 @@ function ArchivesModal({
                               </div>
                               {/* Bonuses */}
                               <div className="row" style={{ justifyContent: "space-between" }}>
+                                <span>Full Gallery</span>
+                                <span>+{pl.breakdown.bonuses.fullGallery ?? 0}</span>
+                              </div>
+                              <div className="row" style={{ justifyContent: "space-between" }}>
                                 <span>Complete Board</span>
                                 <span>+{pl.breakdown.bonuses.completeBoard}</span>
                               </div>
@@ -1996,6 +2012,10 @@ function Results({
               <span>+{winner.breakdown.decor}</span>
             </div>
             <div className="row" style={{ justifyContent: "space-between" }}>
+              <span>Full Gallery</span>
+              <span>+{winner.breakdown.bonuses.fullGallery ?? 0}</span>
+            </div>
+            <div className="row" style={{ justifyContent: "space-between" }}>
               <span>Complete Board</span>
               <span>+{winner.breakdown.bonuses.completeBoard}</span>
             </div>
@@ -2059,6 +2079,10 @@ function Results({
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <span>Decor</span>
                 <span>+{p.breakdown.decor}</span>
+              </div>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <span>Full Gallery</span>
+                <span>+{p.breakdown.bonuses.fullGallery ?? 0}</span>
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <span>Complete Board</span>
