@@ -31,7 +31,7 @@ type Breakdown = {
   perColor: Record<Color, { tiles: number; multiplier: number; points: number }>;
   eyeline: { tiles: number; perTile: number; points: number };
   decor: number;
-  bonuses: { fullGallery: number; completeBoard: number };
+  bonuses: { completeBoard: number };
   penalties: { emptyCorners: number; unplacedPaintings: number };
 };
 
@@ -42,7 +42,6 @@ type Player = {
   paintings: Record<Color, number>;
   eyelineCountForX5: number;
   decorCount: number;
-  fullGallery: boolean;
   completeBoard: boolean;
   penalties: {
     emptyCorners: number;
@@ -260,7 +259,7 @@ function computeScore(
   const eyelinePoints = eyelineTiles * 3;
 
   const decorPoints = player.decorCount * 1;
-  const bonuses = (player.fullGallery ? 5 : 0) + (player.completeBoard ? 5 : 0);
+  const bonuses = (player.completeBoard ? 5 : 0);
   const penalties =
     player.penalties.emptyCorners * 2 + player.penalties.unplacedPaintings * 2;
 
@@ -271,7 +270,7 @@ function computeScore(
     perColor,
     eyeline: { tiles: eyelineTiles, perTile: 3, points: eyelinePoints },
     decor: decorPoints,
-    bonuses: { fullGallery: player.fullGallery ? 5 : 0, completeBoard: player.completeBoard ? 5 : 0 },
+    bonuses: { completeBoard: player.completeBoard ? 5 : 0 },
     penalties: {
       emptyCorners: player.penalties.emptyCorners * 2,
       unplacedPaintings: player.penalties.unplacedPaintings * 2,
@@ -718,15 +717,6 @@ function PlayerCard({
 
       <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
         <Check
-          id={`p-${player.id}-gallery`}
-          checked={player.fullGallery}
-          onChange={(b) => setPlayer({ ...player, fullGallery: b })}
-          label="Full Gallery +5"
-        />
-      </div>
-
-      <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
-        <Check
           id={`p-${player.id}-complete`}
           checked={player.completeBoard}
           onChange={(b) => setPlayer({ ...player, completeBoard: b })}
@@ -831,7 +821,6 @@ function hasAnyInput(players: Player[]): boolean {
   return players.some((p) => {
     if (p.eyelineCountForX5 > 0) return true;
     if (p.decorCount > 0) return true;
-    if (p.fullGallery) return true;
     if (p.completeBoard) return true;
     if (p.penalties.emptyCorners > 0 || p.penalties.unplacedPaintings > 0) return true;
     return COLORS.some((c) => p.paintings[c] > 0);
@@ -845,7 +834,6 @@ function defaultPlayer(i: number): Player {
     paintings: { red: 0, blue: 0, yellow: 0, green: 0 },
     eyelineCountForX5: 0,
     decorCount: 0,
-    fullGallery: false,
     completeBoard: false,
     penalties: { emptyCorners: 0, unplacedPaintings: 0 },
   };
@@ -1730,10 +1718,6 @@ function ArchivesModal({
                               </div>
                               {/* Bonuses */}
                               <div className="row" style={{ justifyContent: "space-between" }}>
-                                <span>Full Gallery</span>
-                                <span>+{pl.breakdown.bonuses.fullGallery ?? 0}</span>
-                              </div>
-                              <div className="row" style={{ justifyContent: "space-between" }}>
                                 <span>Complete Board</span>
                                 <span>+{pl.breakdown.bonuses.completeBoard}</span>
                               </div>
@@ -2064,10 +2048,6 @@ function Results({
               <span>+{winner.breakdown.decor}</span>
             </div>
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <span>Full Gallery</span>
-              <span>+{winner.breakdown.bonuses.fullGallery ?? 0}</span>
-            </div>
-            <div className="row" style={{ justifyContent: "space-between" }}>
               <span>Complete Board</span>
               <span>+{winner.breakdown.bonuses.completeBoard}</span>
             </div>
@@ -2131,10 +2111,6 @@ function Results({
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <span>Decor</span>
                 <span>+{p.breakdown.decor}</span>
-              </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <span>Full Gallery</span>
-                <span>+{p.breakdown.bonuses.fullGallery ?? 0}</span>
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <span>Complete Board</span>
@@ -2241,17 +2217,16 @@ function computeAchievements(
   // High score
   const highScore = Math.max(0, ...myGames.map((g) => g.me.finalScore ?? 0));
 
-  // Clean wins (zero penalties)
-  const cleanWins = myGames.filter(
+  // Clean gallery (zero penalties in any game)
+  const cleanGalleryGames = myGames.filter(
     (g) =>
-      g.isWinner &&
       (g.me.penalties?.emptyCorners ?? 0) === 0 &&
       (g.me.penalties?.unplacedPaintings ?? 0) === 0
   ).length;
 
-  // Full house (both bonuses)
+  // Full house (complete board bonus)
   const fullHouseGames = myGames.filter(
-    (g) => g.me.fullGallery && g.me.completeBoard
+    (g) => g.me.completeBoard
   ).length;
 
   // Minimalist wins (win with 0 decor)
@@ -2310,14 +2285,14 @@ function computeAchievements(
       id: "clean-gallery",
       icon: "✨",
       title: "Clean Gallery",
-      description: "Win with zero penalties",
-      unlocked: cleanWins >= 1,
+      description: "Play a game with zero penalties",
+      unlocked: cleanGalleryGames >= 1,
     },
     {
       id: "full-house",
       icon: "🏛️",
       title: "Full House",
-      description: "Get both Full Gallery and Complete Board in one game",
+      description: "Complete your entire board in a game",
       unlocked: fullHouseGames >= 1,
     },
     {
@@ -2572,9 +2547,9 @@ function generateGameRecap(playersSorted: ResultsPlayer[]): string[] {
       lines.push(`A clean gallery — no penalties at all.`);
     }
 
-    // Both bonuses
-    if ((bd.bonuses.fullGallery ?? 0) > 0 && (bd.bonuses.completeBoard ?? 0) > 0) {
-      lines.push(`Full Gallery and Complete Board — the full +10 bonus package.`);
+    // Complete Board bonus
+    if ((bd.bonuses.completeBoard ?? 0) > 0) {
+      lines.push(`Complete Board bonus — a clean +5.`);
     }
   }
 
